@@ -28,6 +28,12 @@
           </div>
         </div>
         <div class="layui-inline">
+          <label class="layui-form-label">最大页数</label>
+          <div class="layui-input-inline">
+            <input type="number" name="max_pages" placeholder="最大页数" autocomplete="off" class="layui-input" id="max_pages" value="5" min="1" max="20">
+          </div>
+        </div>
+        <div class="layui-inline">
           <button class="layui-btn" lay-submit lay-filter="startCollect">开始采集</button>
         </div>
       </div>
@@ -104,7 +110,7 @@ layui.use(['form','layer','element'], function(){
     state.items = []; state.keyword = $('#keyword').val(); state.source = $('#source').val(); state.total = 0;
     renderGrid(); updateSelectedCount(); updateProgress(0,1);
     $('#select-all').prop('checked', false);
-    var url = '/collector/stream?keyword=' + encodeURIComponent(state.keyword) + '&count=' + encodeURIComponent($('#count').val()) + '&source=' + encodeURIComponent(state.source);
+    var url = '/collector/stream?keyword=' + encodeURIComponent(state.keyword) + '&count=' + encodeURIComponent($('#count').val()) + '&max_pages=' + encodeURIComponent($('#max_pages').val()) + '&source=' + encodeURIComponent(state.source);
     var es = new EventSource(url);
     es.onmessage = function(e){
       try{
@@ -169,6 +175,11 @@ layui.use(['form','layer','element'], function(){
       url: '/collector/deep', method: 'POST', contentType: 'application/json',
       data: JSON.stringify({ url: item.url })
     }).done(function(res){
+      if(!res.deep_collected || !res.deep_content){
+        layer.closeAll('loading');
+        layer.msg('未采集到有效内容', {icon:3});
+        return;
+      }
       item.deep_collected = true;
       item.deep_content = res.deep_content;
       

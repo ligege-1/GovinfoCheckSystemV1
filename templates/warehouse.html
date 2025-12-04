@@ -14,7 +14,7 @@
         </div>
         <div class="layui-inline">
           <button class="layui-btn" id="search-btn">查询</button>
-          <button class="layui-btn layui-btn-warm" id="batch-deep-btn">详细内容采集</button>
+          <button class="layui-btn layui-btn-warm" id="batch-deep-btn">批量深度采集</button>
           <button class="layui-btn layui-btn-normal" id="auto-assoc-btn">一键自动关联</button>
           <button class="layui-btn layui-btn-danger" id="batch-del-btn">批量删除</button>
           <button class="layui-btn layui-btn-primary" id="refresh-btn">刷新</button>
@@ -38,16 +38,18 @@
       </thead>
       <tbody></tbody>
     </table>
+    <div id="pagination" style="text-align: right; margin-top: 10px;"></div>
   </div>
-  <div class="layui-card-footer">
+  <div class="layui-card-footer" style="padding: 10px 15px; border-top: 1px solid #f6f6f6;">
     <button class="layui-btn layui-btn-normal" id="ai-analyze-btn">AI解析分析</button>
   </div>
 </div>
 
 <script>
-layui.use(['layer','element'], function(){
+layui.use(['layer','element','laypage'], function(){
   var layer = layui.layer;
   var element = layui.element;
+  var laypage = layui.laypage;
   var $ = layui.$;
 
   var state = { page: 1, size: 20, keyword: '' };
@@ -72,14 +74,19 @@ layui.use(['layer','element'], function(){
             sourceClass = 'style="background-color:#f0f9eb;"'; // Light green background for the cell
         }
         
-        rows += '<tr>' +
+        var rowStyle = '';
+        if(it.deep_collected){
+            rowStyle = 'style="background-color: #f0f9eb;"'; // Light green background for deep collected rows
+        }
+        
+        rows += '<tr '+ rowStyle +'>' +
           '<td><input type="checkbox" class="wh-check" value="'+ it.id +'"></td>' +
           '<td>'+ it.id +'</td>' +
           '<td>'+ (it.title||'') +'</td>' +
           '<td '+ sourceClass +'>'+ sourceDisplay +'</td>' +
           '<td><img src="'+ (it.cover||defaultAvatar) +'" style="max-height:40px;" onerror="this.src=\''+ defaultAvatar +'\'" /></td>' +
           '<td><a href="'+ (it.url||'#') +'" target="_blank">链接</a></td>' +
-          '<td>'+ (it.deep_collected ? '是' : '否') +'</td>' +
+          '<td>'+ (it.deep_collected ? '<span class="layui-badge layui-bg-green">是</span>' : '<span class="layui-badge layui-bg-gray">否</span>') +'</td>' +
           '<td>'+ (it.created_at||'') +'</td>' +
           '<td>' +
             '<button class="layui-btn layui-btn-xs" data-action="edit" data-id="'+ it.id +'">编辑</button>' +
@@ -90,6 +97,23 @@ layui.use(['layer','element'], function(){
       });
       $('#warehouse-table tbody').html(rows);
       $('#check-all').prop('checked', false);
+
+      // Render Pagination
+      laypage.render({
+        elem: 'pagination',
+        count: res.total,
+        limit: state.size,
+        curr: state.page,
+        layout: ['count', 'prev', 'page', 'next', 'limit', 'skip'],
+        limits: [10, 20, 50, 100],
+        jump: function(obj, first){
+          if(!first){
+            state.page = obj.curr;
+            state.size = obj.limit;
+            loadData();
+          }
+        }
+      });
     });
   }
 
@@ -151,7 +175,7 @@ layui.use(['layer','element'], function(){
 
         layer.open({
             type: 1,
-            title: '批量详细内容采集',
+            title: '批量深度采集',
             area: ['500px', '300px'],
             content: contentHtml,
             btn: ['开始采集', '取消'],
@@ -173,7 +197,7 @@ layui.use(['layer','element'], function(){
                 })
                 .done(function(res){
                     layer.closeAll('loading');
-                    layer.msg('已完成 ' + res.processed + ' 条数据的详细采集');
+                    layer.msg('深度采集成功！已完成 ' + res.processed + ' 条数据的详细采集');
                     loadData();
                 })
                 .fail(function(){
@@ -220,7 +244,7 @@ layui.use(['layer','element'], function(){
 
   $('#search-btn').on('click', function(){
     state.keyword = $('#kw').val();
-    state.page = 1;
+    state.page = 1; // Reset to first page on new search
     loadData();
     return false;
   });
@@ -302,33 +326,39 @@ layui.use(['layer','element'], function(){
 
   $(document).on('click', 'button[data-action="edit"]', function(){
     var id = $(this).attr('data-id');
-    var tr = $(this).closest('tr');
-    var title = tr.find('td').eq(1).text();
-    var source = tr.find('td').eq(2).text();
-    var url = tr.find('td').eq(4).find('a').attr('href');
-    var cover = tr.find('td').eq(3).find('img').attr('src') || '';
+    var item = warehouseItems[id];
+    if(!item){ layer.msg('数据未找到'); return; }
+
     var html = ''+
       '<div style="padding:12px;">' +
-      '<div class="layui-form-item"><label class="layui-form-label">标题</label><div class="layui-input-block"><input id="edit-title" class="layui-input" value="'+ (title||'') +'" /></div></div>' +
-      '<div class="layui-form-item"><label class="layui-form-label">来源</label><div class="layui-input-block"><input id="edit-source" class="layui-input" value="'+ (source||'') +'" /></div></div>' +
-      '<div class="layui-form-item"><label class="layui-form-label">URL</label><div class="layui-input-block"><input id="edit-url" class="layui-input" value="'+ (url||'') +'" /></div></div>' +
-      '<div class="layui-form-item"><label class="layui-form-label">封面</label><div class="layui-input-block"><input id="edit-cover" class="layui-input" value="'+ (cover||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">标题</label><div class="layui-input-block"><input id="edit-title" class="layui-input" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">来源</label><div class="layui-input-block"><input id="edit-source" class="layui-input" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">URL</label><div class="layui-input-block"><input id="edit-url" class="layui-input" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">封面</label><div class="layui-input-block"><input id="edit-cover" class="layui-input" /></div></div>' +
       '<div class="layui-form-item"><label class="layui-form-label">详细</label><div class="layui-input-block"><textarea id="edit-content" class="layui-textarea" rows="6"></textarea></div></div>' +
       '<div style="text-align:right;"><button class="layui-btn" id="edit-save">保存</button></div>' +
       '</div>';
     var idx = layer.open({ type:1, area:['640px','520px'], content: html, title: '编辑' });
     
-    // Fill the content
-    var item = warehouseItems[id];
-    if(item && item.deep_content){
-        $('#edit-content').val(item.deep_content);
-    }
+    // Fill the content safely
+    $('#edit-title').val(item.title || '');
+    $('#edit-source').val(item.source || '');
+    $('#edit-url').val(item.url || '');
+    $('#edit-cover').val(item.cover || '');
+    $('#edit-content').val(item.deep_content || '');
 
     $('#edit-save').on('click', function(){
       layer.load(1);
       $.ajax({
         url: '/warehouse/update', method: 'POST', contentType: 'application/json',
-        data: JSON.stringify({ id: Number(id), title: $('#edit-title').val(), source: $('#edit-source').val(), url: $('#edit-url').val(), cover: $('#edit-cover').val(), deep_content: $('#edit-content').val() })
+        data: JSON.stringify({ 
+            id: Number(id), 
+            title: $('#edit-title').val(), 
+            source: $('#edit-source').val(), 
+            url: $('#edit-url').val(), 
+            cover: $('#edit-cover').val(), 
+            deep_content: $('#edit-content').val() 
+        })
       }).done(function(){
         layer.closeAll('loading');
         layer.close(idx);

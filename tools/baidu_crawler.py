@@ -5,11 +5,12 @@ import time
 import random
 from bs4.element import Tag
 
-def crawl_baidu_news(keyword, max_count=20):
+def crawl_baidu_news(keyword, max_count=20, max_pages=5):
     """
     爬取百度资讯搜索结果 (Generator Version)
     :param keyword: 搜索关键字
     :param max_count: 期望获取的最大数据量，默认为20
+    :param max_pages: 最大爬取页数，默认为5
     :yield: 字典形式的新闻数据
     """
     base_url = "https://www.baidu.com/s"
@@ -118,41 +119,10 @@ def crawl_baidu_news(keyword, max_count=20):
                                     return s
                         return ''
                     cover_url = _cover_from_item(item)
-                    if not cover_url and original_url:
-                        def _extract_cover(url):
-                            try:
-                                r = requests.get(url, timeout=6, headers={
-                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                                })
-                                r.encoding = r.apparent_encoding or 'utf-8'
-                                if r.status_code != 200:
-                                    return ''
-                                sp = BeautifulSoup(r.text, 'html.parser')
-                                metas = [
-                                    sp.find('meta', attrs={'property':'og:image'}),
-                                    sp.find('meta', attrs={'name':'og:image'}),
-                                    sp.find('meta', attrs={'property':'twitter:image'}),
-                                    sp.find('meta', attrs={'name':'twitter:image'})
-                                ]
-                                for m in metas:
-                                    if m:
-                                        c = m.get('content') or ''
-                                        if c:
-                                            return urllib.parse.urljoin(url, c)
-                                l = sp.find('link', rel='image_src')
-                                if l:
-                                    h = l.get('href') or ''
-                                    if h:
-                                        return urllib.parse.urljoin(url, h)
-                                ig = sp.select_one('article img') or sp.select_one('.article img') or sp.select_one('.content img') or sp.select_one('.news-content img') or sp.find('img')
-                                if ig:
-                                    s = _pick_src(ig)
-                                    if s:
-                                        return urllib.parse.urljoin(url, s)
-                                return ''
-                            except Exception:
-                                return ''
-                        cover_url = _extract_cover(original_url)
+                    # Skip deep cover extraction for speed in streaming mode
+                    # if not cover_url and original_url:
+                    #     # Deep cover extraction logic removed to improve response speed
+                    #     pass
                     
                     # 来源
                     source_elem = item.select_one('.c-color-gray')
@@ -289,7 +259,33 @@ def deep_collect_content(url, timeout=10):
                 if len(text) > 100:
                     break
         if not text:
-            text = soup.get_text("\n", strip=True)
+            # Fallback: Try to find all paragraphs
+            ps = soup.find_all('p')
+            if ps:
+                # Filter out very short paragraphs (likely links/footer)
+                valid_ps = [p.get_text(strip=True) for p in ps if len(p.get_text(strip=True)) > 10]
+                if valid_ps:
+                    text = "\n".join(valid_ps)
+        
+        # If text is too short, it's likely garbage
+        if len(text) < 50:
+            return ""
+
+        # Invalid content keywords filter
+        invalid_keywords = [
+            "403 Forbidden", "404 Not Found", "访问受限", "安全验证", "验证码", 
+            "JavaScript is required", "Please turn on JavaScript",
+            "Browser not supported", "浏览器版本过低", "非常抱歉，您无法访问",
+            "系统检测到您的请求异常", "您的IP地址", "Access Denied"
+        ]
+        
+        # Check if text contains predominantly invalid keywords or is just navigation
+        # Simple check: if any critical error message is in the first 500 chars
+        first_part = text[:500]
+        for kw in invalid_keywords:
+            if kw in first_part:
+                return ""
+
         return text[:4000]
     except Exception:
         return ""

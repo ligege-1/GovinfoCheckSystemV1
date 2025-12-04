@@ -42,6 +42,7 @@ def collector_stream():
     keyword = request.args.get('keyword', '')
     max_count = request.args.get('count', default=20, type=int)
     source = request.args.get('source', default='baidu')
+    max_pages = request.args.get('max_pages', default=5, type=int)
 
     def sse_event(data):
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -51,7 +52,7 @@ def collector_stream():
         if source == 'xinhua':
             results_gen = crawl_xinhua_sc_news(max_count=max_count)
         else:
-            results_gen = crawl_baidu_news(keyword, max_count=max_count)
+            results_gen = crawl_baidu_news(keyword, max_count=max_count, max_pages=max_pages)
         
         count = 0
         for idx, item in enumerate(results_gen, 1):
@@ -396,6 +397,8 @@ def collector_deep():
     if not url:
         return jsonify({"error": "missing url"}), 400
     content = deep_collect_content(url)
+    if not content:
+        return jsonify({"deep_content": "", "deep_collected": False})
     return jsonify({"deep_content": content, "deep_collected": True})
 
 @bp.route('/warehouse/batch_deep', methods=['POST'])
@@ -542,16 +545,25 @@ def collector_save_one():
             # 这里为了前端兼容，返回已存在的ID
             return jsonify({"id": existing.id, "msg": "Item already exists"})
 
+        # Validate deep content
+        deep_collected = bool(item.get('deep_collected'))
+        deep_content = item.get('deep_content')
+        
+        if deep_collected and (not deep_content or len(deep_content.strip()) < 50):
+            # If claimed deep collected but content is empty or too short, revert flag
+            deep_collected = False
+            deep_content = None
+
         ci = CollectionItem(
             keyword=keyword,
             title=item.get('title'),
             cover=item.get('cover'),
             url=item.get('url'),
             source=item.get('source'),
-            deep_collected=bool(item.get('deep_collected'))
+            deep_collected=deep_collected
         )
-        if item.get('deep_content'):
-            ci.deep_content_obj = DeepCollectionContent(content=item.get('deep_content'))
+        if deep_content:
+            ci.deep_content_obj = DeepCollectionContent(content=deep_content)
 
         db.session.add(ci)
         db.session.commit()
