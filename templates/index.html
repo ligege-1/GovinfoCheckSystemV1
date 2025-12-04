@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layui-card">
+  <div class="layui-card-header">欢迎使用</div>
+  <div class="layui-card-body">
+    {% if current_user.is_authenticated %}
+      <h3>您好，{{ current_user.name }} ({{ current_user.role.description }})</h3>
+      <p>您现在可以访问系统的高级功能。</p>
+      {% if current_user.role.name == 'admin' %}
+        <p class="layui-text">您拥有管理员权限，可以进行用户管理和系统设置。</p>
+      {% endif %}
+    {% else %}
+      这是一个基于 Flask + Layui 的政府信息检查系统框架。
+      <br>
+      <a href="{{ url_for('auth.login') }}" class="layui-btn layui-btn-normal layui-btn-sm" style="margin-top: 10px;">立即登录</a>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

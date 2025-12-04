@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layui-card">
+  <div class="layui-card-header">数据采集管理</div>
+  <div class="layui-card-body">
+    <form class="layui-form" id="collect-form" action="javascript:void(0);" style="margin-bottom: 16px;">
+      <div class="layui-form-item">
+        <div class="layui-inline">
+          <label class="layui-form-label">关键字</label>
+          <div class="layui-input-inline">
+            <input type="text" name="keyword" required lay-verify="required" placeholder="请输入采集关键字" autocomplete="off" class="layui-input" id="keyword">
+          </div>
+        </div>
+        <div class="layui-inline">
+          <label class="layui-form-label">数量</label>
+          <div class="layui-input-inline">
+            <input type="number" name="count" required lay-verify="required|number" placeholder="采集数量" autocomplete="off" class="layui-input" id="count" value="20" min="1" max="50">
+          </div>
+        </div>
+        <div class="layui-inline">
+          <button class="layui-btn" lay-submit lay-filter="startCollect">开始采集</button>
+        </div>
+      </div>
+    </form>
+
+    <div class="layui-progress" lay-showPercent="true" lay-filter="progress-filter" style="margin-bottom: 12px;">
+      <div class="layui-progress-bar" lay-percent="0%" id="progress-bar"></div>
+    </div>
+
+    <div style="margin-bottom: 12px;">
+      <button class="layui-btn layui-btn-primary layui-btn-sm" id="save-selected">保存选中到数据库</button>
+      <span class="layui-badge" id="selected-count">选中 0 项</span>
+    </div>
+
+    <div class="layui-row" id="result-grid"></div>
+  </div>
+</div>
+
+<script>
+layui.use(['form','layer','element'], function(){
+  var form = layui.form;
+  var layer = layui.layer;
+  var element = layui.element;
+  var $ = layui.$;
+
+  var state = { items: [], keyword: '', total: 0 };
+
+  function updateProgress(current, total){
+    var percent = total ? Math.round((current/total)*100) : 0;
+    element.progress('progress-filter', percent + '%');
+    $('#progress-bar').attr('lay-percent', percent + '%').css('width', percent + '%');
+  }
+
+  function renderGrid(){
+    var html = '';
+    state.items.forEach(function(item, idx){
+      html += '\n<div class="layui-col-md3" style="padding:8px;">' +
+        '<div class="layui-card">' +
+          '<div class="layui-card-body" style="min-height:220px;">' +
+            '<div style="text-align:center;margin-bottom:8px;">' +
+              '<a href="'+ item.url +'" target="_blank"><img src="'+ (item.cover||'') +'" style="max-width:100%;max-height:120px;" onerror="this.src=\'{{ url_for('static', filename='images/avatar.svg') }}\';this.onerror=null;"></a>' +
+            '</div>' +
+            '<div style="font-weight:600;margin-bottom:6px;"><a href="'+ item.url +'" target="_blank" class="layui-table-link">'+ item.title +'</a></div>' +
+            '<div style="color:#888;margin-bottom:8px;">来源：'+ item.source +'</div>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+              '<div>' +
+                '<input type="checkbox" lay-filter="selectItem" data-index="'+ idx +'" '+ (item.selected?'checked':'') +' title="选中" />' +
+              '</div>' +
+              '<div>' +
+                '<button class="layui-btn layui-btn-xs" data-action="deep" data-index="'+ idx +'">深度采集</button>' +
+                '<button class="layui-btn layui-btn-warm layui-btn-xs" data-action="store" data-index="'+ idx +'" style="margin-left:6px;">存储</button>' +
+                '<span class="layui-badge '+ (item.deep_collected ? 'layui-bg-green' : 'layui-bg-gray') +'" style="margin-left:6px;">'+ (item.deep_collected ? '已深度' : '未深度') +'</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    });
+    $('#result-grid').html(html);
+  }
+
+  function updateSelectedCount(){
+    var count = state.items.filter(function(i){ return !!i.selected; }).length;
+    $('#selected-count').text('选中 ' + count + ' 项');
+  }
+
+  form.on('submit(startCollect)', function(data){
+    state.items = []; state.keyword = $('#keyword').val(); state.total = 0;
+    renderGrid(); updateSelectedCount(); updateProgress(0,1);
+    var url = '/collector/stream?keyword=' + encodeURIComponent(state.keyword) + '&count=' + encodeURIComponent($('#count').val());
+    var es = new EventSource(url);
+    es.onmessage = function(e){
+      try{
+        var msg = JSON.parse(e.data);
+        if(msg.type === 'start'){
+          state.total = msg.total || 0;
+          updateProgress(0, state.total);
+        } else if(msg.type === 'item'){
+          state.items.push(msg.item);
+          renderGrid(); updateSelectedCount();
+          var total = msg.total || state.total;
+          updateProgress(state.items.length, total);
+        } else if(msg.type === 'progress'){
+          updateProgress(msg.current, msg.total);
+        } else if(msg.type === 'complete'){
+          updateProgress(msg.total, msg.total);
+          es.close();
+          layer.msg('采集完成，共 ' + msg.total + ' 条');
+        }
+      }catch(err){ console.error(err); }
+    };
+    es.onerror = function(){ es.close(); layer.msg('采集连接中断', {icon:2}); };
+    return false;
+  });
+
+  $(document).on('click', 'button[data-action="store"]', function(){
+    var idx = parseInt($(this).attr('data-index'));
+    var item = state.items[idx];
+    if(!item){ return; }
+    if(!item.deep_content){ layer.msg('请先进行深度采集'); return; }
+    layer.load(1);
+    $.ajax({
+      url: '/collector/save_one', method: 'POST', contentType: 'application/json',
+      data: JSON.stringify({
+        keyword: state.keyword,
+        item: {
+          title: item.title,
+          cover: item.cover,
+          url: item.url,
+          source: item.source,
+          deep_collected: item.deep_collected,
+          deep_content: item.deep_content
+        }
+      })
+    }).done(function(res){
+      layer.closeAll('loading');
+      layer.msg('已存储，ID: ' + res.id);
+    }).fail(function(){
+      layer.closeAll('loading');
+      layer.msg('存储失败', {icon:2});
+    });
+  });
+
+  $(document).on('click', 'button[data-action="deep"]', function(){
+    var idx = parseInt($(this).attr('data-index'));
+    var item = state.items[idx];
+    if(!item || item.deep_collected){ return; }
+    layer.load(1);
+    $.ajax({
+      url: '/collector/deep', method: 'POST', contentType: 'application/json',
+      data: JSON.stringify({ url: item.url })
+    }).done(function(res){
+      item.deep_collected = true;
+      item.deep_content = res.deep_content;
+      renderGrid();
+      layer.closeAll('loading');
+      layer.msg('深度采集完成');
+    }).fail(function(){
+      layer.closeAll('loading');
+      layer.msg('深度采集失败', {icon:2});
+    });
+  });
+
+  $(document).on('click', 'input[lay-filter="selectItem"]', function(){
+    var idx = parseInt($(this).attr('data-index'));
+    var checked = $(this).prop('checked');
+    if(state.items[idx]){ state.items[idx].selected = checked; }
+    updateSelectedCount();
+  });
+
+  $('#save-selected').on('click', function(){
+    var selected = state.items.filter(function(i){ return !!i.selected; });
+    if(selected.length === 0){ layer.msg('请先选中要保存的数据'); return; }
+    layer.load(1);
+    $.ajax({
+      url: '/collector/save', method: 'POST', contentType: 'application/json',
+      data: JSON.stringify({ keyword: state.keyword, items: selected })
+    }).done(function(res){
+      layer.closeAll('loading');
+      layer.msg('已保存 ' + res.saved + ' 条');
+    }).fail(function(){
+      layer.closeAll('loading');
+      layer.msg('保存失败', {icon:2});
+    });
+  });
+});
+</script>
+{% endblock %}
