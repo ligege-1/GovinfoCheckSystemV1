@@ -13,6 +13,15 @@
           </div>
         </div>
         <div class="layui-inline">
+          <label class="layui-form-label">来源</label>
+          <div class="layui-input-inline">
+            <select name="source" id="source">
+              <option value="baidu" selected>百度</option>
+              <option value="xinhua">新华网</option>
+            </select>
+          </div>
+        </div>
+        <div class="layui-inline">
           <label class="layui-form-label">数量</label>
           <div class="layui-input-inline">
             <input type="number" name="count" required lay-verify="required|number" placeholder="采集数量" autocomplete="off" class="layui-input" id="count" value="20" min="1" max="50">
@@ -30,6 +39,7 @@
 
     <div style="margin-bottom: 12px;">
       <button class="layui-btn layui-btn-primary layui-btn-sm" id="save-selected">保存选中到数据库</button>
+      <input type="checkbox" lay-filter="selectAll" id="select-all" title="全选" style="margin-left:8px;" />
       <span class="layui-badge" id="selected-count">选中 0 项</span>
     </div>
 
@@ -44,7 +54,7 @@ layui.use(['form','layer','element'], function(){
   var element = layui.element;
   var $ = layui.$;
 
-  var state = { items: [], keyword: '', total: 0 };
+  var state = { items: [], keyword: '', total: 0, source: 'baidu' };
 
   function updateProgress(current, total){
     var percent = total ? Math.round((current/total)*100) : 0;
@@ -59,7 +69,7 @@ layui.use(['form','layer','element'], function(){
         '<div class="layui-card">' +
           '<div class="layui-card-body" style="min-height:220px;">' +
             '<div style="text-align:center;margin-bottom:8px;">' +
-              '<a href="'+ item.url +'" target="_blank"><img src="'+ (item.cover||'') +'" style="max-width:100%;max-height:120px;" onerror="this.src=\'{{ url_for('static', filename='images/avatar.svg') }}\';this.onerror=null;"></a>' +
+              '<a href="'+ item.url +'" target="_blank"><img src="'+ (item.cover||"{{ url_for('static', filename='images/avatar.svg') }}") +'" style="max-width:100%;max-height:120px;" onerror="this.src=\'{{ url_for(\'static\', filename=\'images/avatar.svg\') }}\';this.onerror=null;"></a>' +
             '</div>' +
             '<div style="font-weight:600;margin-bottom:6px;"><a href="'+ item.url +'" target="_blank" class="layui-table-link">'+ item.title +'</a></div>' +
             '<div style="color:#888;margin-bottom:8px;">来源：'+ item.source +'</div>' +
@@ -83,12 +93,15 @@ layui.use(['form','layer','element'], function(){
   function updateSelectedCount(){
     var count = state.items.filter(function(i){ return !!i.selected; }).length;
     $('#selected-count').text('选中 ' + count + ' 项');
+    var all = state.items.length > 0 && count === state.items.length;
+    $('#select-all').prop('checked', all);
   }
 
   form.on('submit(startCollect)', function(data){
-    state.items = []; state.keyword = $('#keyword').val(); state.total = 0;
+    state.items = []; state.keyword = $('#keyword').val(); state.source = $('#source').val(); state.total = 0;
     renderGrid(); updateSelectedCount(); updateProgress(0,1);
-    var url = '/collector/stream?keyword=' + encodeURIComponent(state.keyword) + '&count=' + encodeURIComponent($('#count').val());
+    $('#select-all').prop('checked', false);
+    var url = '/collector/stream?keyword=' + encodeURIComponent(state.keyword) + '&count=' + encodeURIComponent($('#count').val()) + '&source=' + encodeURIComponent(state.source);
     var es = new EventSource(url);
     es.onmessage = function(e){
       try{
@@ -166,6 +179,13 @@ layui.use(['form','layer','element'], function(){
     var idx = parseInt($(this).attr('data-index'));
     var checked = $(this).prop('checked');
     if(state.items[idx]){ state.items[idx].selected = checked; }
+    updateSelectedCount();
+  });
+
+  $(document).on('click', 'input[lay-filter="selectAll"]', function(){
+    var checked = $(this).prop('checked');
+    state.items.forEach(function(i){ i.selected = checked; });
+    renderGrid();
     updateSelectedCount();
   });
 

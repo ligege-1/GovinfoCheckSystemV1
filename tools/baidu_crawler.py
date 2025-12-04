@@ -180,6 +180,75 @@ def crawl_baidu_news(keyword, max_count=20):
             
     return all_results
 
+import json
+from lxml import etree
+
+def collect_content_by_rule(url, title_xpath, content_xpath, headers_str, timeout=15):
+    """
+    使用指定的规则爬取详细内容
+    :param url: 目标URL
+    :param title_xpath: 标题XPath
+    :param content_xpath: 内容XPath
+    :param headers_str: JSON字符串形式的headers
+    :return: (title, content) 如果失败则返回None
+    """
+    try:
+        headers = {}
+        if headers_str:
+            try:
+                headers = json.loads(headers_str)
+            except:
+                pass
+        
+        if not headers:
+             headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            }
+            
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        resp.encoding = resp.apparent_encoding or 'utf-8'
+        
+        if resp.status_code != 200:
+            return None
+            
+        html = etree.HTML(resp.text)
+        if html is None:
+            return None
+            
+        title = ""
+        content = ""
+        
+        if title_xpath:
+            t_nodes = html.xpath(title_xpath)
+            if t_nodes:
+                # lxml returns list of elements or strings
+                if isinstance(t_nodes[0], str):
+                    title = t_nodes[0].strip()
+                elif hasattr(t_nodes[0], 'text'):
+                    title = "".join([n.xpath('string(.)') for n in t_nodes]).strip()
+                else:
+                    title = str(t_nodes[0]).strip()
+
+        if content_xpath:
+            c_nodes = html.xpath(content_xpath)
+            if c_nodes:
+                # Aggregate content from all matched nodes
+                parts = []
+                for node in c_nodes:
+                    if isinstance(node, str):
+                        parts.append(node.strip())
+                    elif hasattr(node, 'xpath'):
+                        # Use string(.) to get all text within the node
+                        parts.append(node.xpath('string(.)').strip())
+                    else:
+                        parts.append(str(node).strip())
+                content = "\n".join([p for p in parts if p])
+                
+        return title, content
+    except Exception as e:
+        print(f"Rule crawl error: {e}")
+        return None
+
 def deep_collect_content(url, timeout=10):
     try:
         resp = requests.get(url, timeout=timeout, headers={
@@ -215,6 +284,152 @@ def deep_collect_content(url, timeout=10):
         return text[:4000]
     except Exception:
         return ""
+
+def crawl_xinhua_sc_news(max_count=20):
+    """
+    爬取新华网四川新闻页，返回与百度新闻一致的数据结构
+    数据源: http://sc.news.cn/scyw.htm
+    返回: List[Dict]，每项包含 title, cover, url, source
+    """
+    base_url = "http://sc.news.cn/scyw.htm"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
+    results = []
+    seen = set()
+    try:
+        r = requests.get(base_url, headers=headers, timeout=10)
+        r.encoding = r.apparent_encoding or 'utf-8'
+        if r.status_code != 200:
+            return results
+        soup = BeautifulSoup(r.text, 'html.parser')
+
+        def pick_src(e):
+            for k in ['src','data-src','data-ori','data-original','data-thumb','data-lazyload']:
+                v = e.get(k)
+                if v and v.strip():
+                    return v.strip()
+            return ''
+
+        def extract_cover_from_page(url):
+            try:
+                rr = requests.get(url, headers=headers, timeout=8)
+                rr.encoding = rr.apparent_encoding or 'utf-8'
+                if rr.status_code != 200:
+                    return ''
+                sp = BeautifulSoup(rr.text, 'html.parser')
+                metas = [
+                    sp.find('meta', attrs={'property':'og:image'}),
+                    sp.find('meta', attrs={'name':'og:image'}),
+                    sp.find('meta', attrs={'property':'twitter:image'}),
+                    sp.find('meta', attrs={'name':'twitter:image'})
+                ]
+                for m in metas:
+                    if m:
+                        c = (m.get('content') or '').strip()
+                        if c:
+                            return urllib.parse.urljoin(url, c)
+                l = sp.find('link', rel='image_src')
+                if l:
+                    h = (l.get('href') or '').strip()
+                    if h:
+                        return urllib.parse.urljoin(url, h)
+                # 尝试从可能的样式背景图中提取
+                bg_candidates = sp.select('.pic, .image, .cover, .thumb, .poster')
+                for bg in bg_candidates:
+                    style = (bg.get('style') or '')
+                    if 'background-image' in style:
+                        import re
+                        m = re.search(r"url\(['\"]?(.*?)['\"]?\)", style)
+                        if m and m.group(1):
+                            return urllib.parse.urljoin(url, m.group(1))
+                # 兜底：扫描脚本中的图片链接
+                import re
+                for sc in sp.find_all('script'):
+                    txt = sc.string or sc.text or ''
+                    if not txt:
+                        continue
+                    m = re.search(r"https?://[^\s'\"]+\.(?:jpg|jpeg|png|gif|webp)", txt, re.IGNORECASE)
+                    if m:
+                        return urllib.parse.urljoin(url, m.group(0))
+                ig = sp.select_one('article img') or sp.select_one('.article img') or sp.select_one('.content img') or sp.select_one('.news-content img') or sp.find('img')
+                if ig:
+                    s = pick_src(ig)
+                    if s:
+                        return urllib.parse.urljoin(url, s)
+                return ''
+            except Exception:
+                return ''
+
+        # 主要与备用选择器，尽量适配常见新华列表结构
+        item_selectors = [
+            'div.dataList li',
+            '#dataList li',
+            'div.news_list li',
+            '#news_list li',
+            'ul.list li',
+            '.content_list li',
+            '.newsList li',
+            '.newslist li'
+        ]
+        items = []
+        for sel in item_selectors:
+            items = soup.select(sel)
+            if items:
+                break
+        if not items:
+            # 兜底：寻找包含链接的块级元素
+            items = soup.select('a')
+
+        for it in items:
+            # 提取链接与标题
+            a = it if it.name == 'a' else it.select_one('a')
+            if not a:
+                continue
+            title = a.get_text(strip=True) or (a.get('title') or '').strip()
+            href = (a.get('href') or '').strip()
+            if not href or not title:
+                continue
+            url = urllib.parse.urljoin(base_url, href)
+            if url in seen:
+                continue
+            seen.add(url)
+
+            # 提取封面
+            cover = ''
+            img = it.select_one('img') if it and it != a else None
+            if img:
+                s = pick_src(img)
+                if s:
+                    cover = urllib.parse.urljoin(base_url, s)
+            if not cover:
+                cover = extract_cover_from_page(url)
+            # 针对部分新华子域名提供兜底封面
+            if not cover:
+                host = urllib.parse.urlparse(url).netloc
+                if 'app.xinhuanet.com' in host or 'xinhuaxmt.com' in host:
+                    cover = 'https://lib.news.cn/common/sharelogo.jpg'
+
+            # 来源固定标注为新华网（四川）或页面来源文本
+            source = '新华网'
+            src_el = it.select_one('.source') or it.select_one('.news_source')
+            if src_el:
+                st = src_el.get_text(strip=True)
+                if st:
+                    source = st
+
+            results.append({
+                'title': title,
+                'cover': cover,
+                'url': url,
+                'source': source
+            })
+            if len(results) >= max_count:
+                break
+
+    except Exception:
+        return results
+    return results
 
 if __name__ == "__main__":
     keyword = "西昌"

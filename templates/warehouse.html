@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layui-card">
+  <div class="layui-card-header">数据仓库管理</div>
+  <div class="layui-card-body">
+    <form class="layui-form" action="javascript:void(0);" style="margin-bottom: 12px;">
+      <div class="layui-form-item">
+        <div class="layui-inline">
+          <label class="layui-form-label">关键字</label>
+          <div class="layui-input-inline">
+            <input type="text" placeholder="按标题筛选" autocomplete="off" class="layui-input" id="kw">
+          </div>
+        </div>
+        <div class="layui-inline">
+          <button class="layui-btn" id="search-btn">查询</button>
+          <button class="layui-btn layui-btn-warm" id="batch-deep-btn">详细内容采集</button>
+          <button class="layui-btn layui-btn-danger" id="refresh-btn">刷新</button>
+        </div>
+      </div>
+    </form>
+
+    <table class="layui-table" id="warehouse-table">
+      <thead>
+        <tr>
+          <th style="width: 40px;"><input type="checkbox" id="check-all"></th>
+          <th>ID</th>
+          <th>标题</th>
+          <th>来源</th>
+          <th>封面</th>
+          <th>URL</th>
+          <th>已深度</th>
+          <th>创建时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="layui-card-footer">
+    <button class="layui-btn layui-btn-normal" id="ai-analyze-btn">AI解析分析</button>
+  </div>
+</div>
+
+<script>
+layui.use(['layer','element'], function(){
+  var layer = layui.layer;
+  var element = layui.element;
+  var $ = layui.$;
+
+  var state = { page: 1, size: 20, keyword: '' };
+
+  function loadData(){
+    var url = '/warehouse/list?page=' + state.page + '&size=' + state.size + '&keyword=' + encodeURIComponent(state.keyword);
+    $.getJSON(url, function(res){
+      var rows = '';
+      res.items.forEach(function(it){
+        rows += '<tr>' +
+          '<td><input type="checkbox" class="wh-check" value="'+ it.id +'"></td>' +
+          '<td>'+ it.id +'</td>' +
+          '<td>'+ (it.title||'') +'</td>' +
+          '<td>'+ (it.source||'') +'</td>' +
+          '<td><img src="'+ (it.cover||"{{ url_for('static', filename='images/avatar.svg') }}") +'" style="max-height:40px;" onerror="this.src=\'{{ url_for('static', filename='images/avatar.svg') }}\'" /></td>' +
+          '<td><a href="'+ (it.url||'#') +'" target="_blank">链接</a></td>' +
+          '<td>'+ (it.deep_collected ? '是' : '否') +'</td>' +
+          '<td>'+ (it.created_at||'') +'</td>' +
+          '<td>' +
+            '<button class="layui-btn layui-btn-xs" data-action="edit" data-id="'+ it.id +'">编辑</button>' +
+            '<button class="layui-btn layui-btn-danger layui-btn-xs" data-action="del" data-id="'+ it.id +'" style="margin-left:6px;">删除</button>' +
+          '</td>' +
+        '</tr>';
+      });
+      $('#warehouse-table tbody').html(rows);
+      $('#check-all').prop('checked', false);
+    });
+  }
+
+  $('#check-all').on('change', function(){
+    var checked = $(this).prop('checked');
+    $('.wh-check').prop('checked', checked);
+  });
+
+  $('#batch-deep-btn').on('click', function(){
+    var ids = [];
+    $('.wh-check:checked').each(function(){
+      ids.push(Number($(this).val()));
+    });
+    if(ids.length === 0){
+      layer.msg('请先选择要采集的数据');
+      return false;
+    }
+    layer.confirm('确认对选中的 ' + ids.length + ' 条数据进行详细内容采集？<br><span style="color:red;font-size:12px;">将优先使用匹配站点的采集规则</span>', function(index){
+      layer.load(1);
+      $.ajax({
+        url: '/warehouse/batch_deep',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ ids: ids })
+      })
+      .done(function(res){
+        layer.closeAll('loading');
+        layer.msg('已完成 ' + res.processed + ' 条数据的详细采集');
+        loadData();
+      })
+      .fail(function(){
+        layer.closeAll('loading');
+        layer.msg('采集失败', {icon: 2});
+      });
+      layer.close(index);
+    });
+    return false;
+  });
+
+  $('#search-btn').on('click', function(){
+    state.keyword = $('#kw').val();
+    state.page = 1;
+    loadData();
+    return false;
+  });
+  $('#refresh-btn').on('click', function(){
+    loadData();
+    return false;
+  });
+
+  $(document).on('click', 'button[data-action="del"]', function(){
+    var id = $(this).attr('data-id');
+    layer.confirm('确认删除？', function(index){
+      layer.load(1);
+      $.ajax({
+        url: '/warehouse/delete', method: 'POST', contentType: 'application/json',
+        data: JSON.stringify({ id: Number(id) })
+      }).done(function(){
+        layer.closeAll('loading');
+        layer.msg('已删除');
+        loadData();
+      }).fail(function(){
+        layer.closeAll('loading');
+        layer.msg('删除失败', {icon:2});
+      });
+      layer.close(index);
+    });
+  });
+
+  $(document).on('click', 'button[data-action="edit"]', function(){
+    var id = $(this).attr('data-id');
+    var tr = $(this).closest('tr');
+    var title = tr.find('td').eq(1).text();
+    var source = tr.find('td').eq(2).text();
+    var url = tr.find('td').eq(4).find('a').attr('href');
+    var cover = tr.find('td').eq(3).find('img').attr('src') || '';
+    var html = ''+
+      '<div style="padding:12px;">' +
+      '<div class="layui-form-item"><label class="layui-form-label">标题</label><div class="layui-input-block"><input id="edit-title" class="layui-input" value="'+ (title||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">来源</label><div class="layui-input-block"><input id="edit-source" class="layui-input" value="'+ (source||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">URL</label><div class="layui-input-block"><input id="edit-url" class="layui-input" value="'+ (url||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">封面</label><div class="layui-input-block"><input id="edit-cover" class="layui-input" value="'+ (cover||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">详细</label><div class="layui-input-block"><textarea id="edit-content" class="layui-textarea" rows="6"></textarea></div></div>' +
+      '<div style="text-align:right;"><button class="layui-btn" id="edit-save">保存</button></div>' +
+      '</div>';
+    var idx = layer.open({ type:1, area:['640px','520px'], content: html, title: '编辑' });
+    $('#edit-save').on('click', function(){
+      layer.load(1);
+      $.ajax({
+        url: '/warehouse/update', method: 'POST', contentType: 'application/json',
+        data: JSON.stringify({ id: Number(id), title: $('#edit-title').val(), source: $('#edit-source').val(), url: $('#edit-url').val(), cover: $('#edit-cover').val(), deep_content: $('#edit-content').val() })
+      }).done(function(){
+        layer.closeAll('loading');
+        layer.close(idx);
+        layer.msg('已保存');
+        loadData();
+      }).fail(function(){
+        layer.closeAll('loading');
+        layer.msg('保存失败', {icon:2});
+      });
+    });
+  });
+
+  $('#ai-analyze-btn').on('click', function(){
+    var firstId = $('#warehouse-table tbody tr').first().find('button[data-action="edit"]').attr('data-id');
+    layer.load(1);
+    $.ajax({ url: '/warehouse/analyze', method: 'POST', contentType: 'application/json', data: JSON.stringify({ id: Number(firstId||0) }) })
+      .done(function(res){ layer.closeAll('loading'); layer.msg('分析入口预留'); })
+      .fail(function(){ layer.closeAll('loading'); layer.msg('分析调用失败', {icon:2}); });
+  });
+
+  loadData();
+});
+</script>
+{% endblock %}

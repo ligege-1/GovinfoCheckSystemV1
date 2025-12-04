@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layui-card">
+  <div class="layui-card-header">采集规则库</div>
+  <div class="layui-card-body">
+    <form class="layui-form" action="javascript:void(0);" style="margin-bottom: 12px;">
+      <div class="layui-form-item">
+        <div class="layui-inline">
+          <label class="layui-form-label">站点</label>
+          <div class="layui-input-inline">
+            <input type="text" placeholder="例如: xinhuanet.com" autocomplete="off" class="layui-input" id="site">
+          </div>
+        </div>
+        <div class="layui-inline">
+          <button class="layui-btn" id="create-btn">新增规则</button>
+          <button class="layui-btn layui-btn-danger" id="batch-del-btn">批量删除</button>
+          <button class="layui-btn layui-btn-primary" id="search-btn">查询</button>
+        </div>
+      </div>
+    </form>
+
+    <table class="layui-table" id="rules-table" lay-size="sm">
+      <colgroup>
+        <col width="40">
+        <col width="60">
+        <col width="150">
+        <col width="200">
+        <col width="200">
+        <col>
+        <col width="160">
+        <col width="120">
+      </colgroup>
+      <thead>
+        <tr>
+          <th style="text-align:center;"><input type="checkbox" id="check-all"></th>
+          <th>ID</th>
+          <th>站点</th>
+          <th>标题XPath</th>
+          <th>详细XPath</th>
+          <th>Headers(JSON)</th>
+          <th>创建时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+layui.use(['layer','element'], function(){
+  var layer = layui.layer;
+  var element = layui.element;
+  var $ = layui.$;
+
+  var state = { keyword: '' };
+
+  function loadRules(){
+    var url = '/rules/list?keyword=' + encodeURIComponent(state.keyword);
+    $.getJSON(url, function(res){
+      var rows = '';
+      res.items.forEach(function(r){
+        rows += '<tr>' +
+          '<td style="text-align:center;"><input type="checkbox" class="rule-check" value="'+ r.id +'"></td>' +
+          '<td>'+ r.id +'</td>' +
+          '<td><div style="max-height:60px;overflow:hidden;text-overflow:ellipsis;" title="'+ (r.site||'') +'">'+ (r.site||'') +'</div></td>' +
+          '<td><div style="max-height:60px;overflow:hidden;text-overflow:ellipsis;" title="'+ (r.title_xpath||'') +'">'+ (r.title_xpath||'') +'</div></td>' +
+          '<td><div style="max-height:60px;overflow:hidden;text-overflow:ellipsis;" title="'+ (r.content_xpath||'') +'">'+ (r.content_xpath||'') +'</div></td>' +
+          '<td><div style="max-height:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+ (r.headers_json||'') +'">'+ (r.headers_json||'') +'</div></td>' +
+          '<td>'+ (r.created_at||'') +'</td>' +
+          '<td>' +
+            '<button class="layui-btn layui-btn-xs" data-action="edit" data-id="'+ r.id +'">编辑</button>' +
+            '<button class="layui-btn layui-btn-danger layui-btn-xs" data-action="del" data-id="'+ r.id +'" style="margin-left:6px;">删除</button>' +
+          '</td>' +
+        '</tr>';
+      });
+      $('#rules-table tbody').html(rows);
+      $('#check-all').prop('checked', false);
+    });
+  }
+
+  $('#check-all').on('change', function(){
+    var checked = $(this).prop('checked');
+    $('.rule-check').prop('checked', checked);
+  });
+
+  $('#batch-del-btn').on('click', function(){
+    var ids = [];
+    $('.rule-check:checked').each(function(){
+      ids.push(Number($(this).val()));
+    });
+    if(ids.length === 0){
+      layer.msg('请先选择要删除的规则');
+      return false;
+    }
+    layer.confirm('确认删除选中的 ' + ids.length + ' 条规则？', function(index){
+      layer.load(1);
+      $.ajax({
+        url: '/rules/batch_delete',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ ids: ids })
+      })
+      .done(function(res){
+        layer.closeAll('loading');
+        layer.msg('已删除 ' + res.deleted + ' 条规则');
+        loadRules();
+      })
+      .fail(function(){
+        layer.closeAll('loading');
+        layer.msg('删除失败', {icon: 2});
+      });
+      layer.close(index);
+    });
+    return false;
+  });
+
+  $('#search-btn').on('click', function(){
+    state.keyword = $('#site').val();
+    loadRules();
+    return false;
+  });
+
+  $('#create-btn').on('click', function(){
+    var html = ''+
+      '<div style="padding:12px;">' +
+      '<div class="layui-form-item"><label class="layui-form-label">站点</label><div class="layui-input-block"><input id="edit-site" class="layui-input" placeholder="xinhuanet.com" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">标题XPath</label><div class="layui-input-block"><input id="edit-title-xp" class="layui-input" placeholder="//h1" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">详细XPath</label><div class="layui-input-block"><input id="edit-content-xp" class="layui-input" placeholder="//article" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">Headers(JSON)</label><div class="layui-input-block"><textarea id="edit-headers" class="layui-textarea" rows="6" placeholder="{\"User-Agent\": \"...\"}"></textarea></div></div>' +
+      '<div style="text-align:right;"><button class="layui-btn" id="edit-save">保存</button></div>' +
+      '</div>';
+    var idx = layer.open({ type:1, area:['720px','560px'], content: html, title: '新增规则' });
+    $('#edit-save').on('click', function(){
+      layer.load(1);
+      $.ajax({ url:'/rules/create', method:'POST', contentType:'application/json', data: JSON.stringify({ site: $('#edit-site').val(), title_xpath: $('#edit-title-xp').val(), content_xpath: $('#edit-content-xp').val(), headers_json: $('#edit-headers').val() }) })
+        .done(function(){ layer.closeAll('loading'); layer.close(idx); layer.msg('已保存'); loadRules(); })
+        .fail(function(){ layer.closeAll('loading'); layer.msg('保存失败', {icon:2}); });
+    });
+    return false;
+  });
+
+  $(document).on('click', 'button[data-action="edit"]', function(){
+    var id = $(this).attr('data-id');
+    var tr = $(this).closest('tr');
+    var site = tr.find('td').eq(1).text();
+    var title_xpath = tr.find('td').eq(2).text();
+    var content_xpath = tr.find('td').eq(3).text();
+    var headers_json = tr.find('td').eq(4).text();
+    var html = ''+
+      '<div style="padding:12px;">' +
+      '<div class="layui-form-item"><label class="layui-form-label">站点</label><div class="layui-input-block"><input id="edit-site" class="layui-input" value="'+ (site||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">标题XPath</label><div class="layui-input-block"><input id="edit-title-xp" class="layui-input" value="'+ (title_xpath||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">详细XPath</label><div class="layui-input-block"><input id="edit-content-xp" class="layui-input" value="'+ (content_xpath||'') +'" /></div></div>' +
+      '<div class="layui-form-item"><label class="layui-form-label">Headers(JSON)</label><div class="layui-input-block"><textarea id="edit-headers" class="layui-textarea" rows="6">'+ (headers_json||'') +'</textarea></div></div>' +
+      '<div style="text-align:right;"><button class="layui-btn" id="edit-save">保存</button></div>' +
+      '</div>';
+    var idx = layer.open({ type:1, area:['720px','560px'], content: html, title: '编辑规则' });
+    $('#edit-save').on('click', function(){
+      layer.load(1);
+      $.ajax({ url:'/rules/update', method:'POST', contentType:'application/json', data: JSON.stringify({ id: Number(id), site: $('#edit-site').val(), title_xpath: $('#edit-title-xp').val(), content_xpath: $('#edit-content-xp').val(), headers_json: $('#edit-headers').val() }) })
+        .done(function(){ layer.closeAll('loading'); layer.close(idx); layer.msg('已保存'); loadRules(); })
+        .fail(function(){ layer.closeAll('loading'); layer.msg('保存失败', {icon:2}); });
+    });
+  });
+
+  $(document).on('click', 'button[data-action="del"]', function(){
+    var id = $(this).attr('data-id');
+    layer.confirm('确认删除该规则？', function(index){
+      layer.load(1);
+      $.ajax({ url:'/rules/delete', method:'POST', contentType:'application/json', data: JSON.stringify({ id: Number(id) }) })
+        .done(function(){ layer.closeAll('loading'); layer.msg('已删除'); loadRules(); })
+        .fail(function(){ layer.closeAll('loading'); layer.msg('删除失败', {icon:2}); });
+      layer.close(index);
+    });
+  });
+
+  loadRules();
+});
+</script>
+{% endblock %}

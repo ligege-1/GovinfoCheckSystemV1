@@ -57,6 +57,8 @@
             <dd><a href="/">系统检测</a></dd>
             {% if current_user.is_authenticated %}
             <dd><a href="{{ url_for('main.collector_page') }}">数据采集管理</a></dd>
+            <dd><a href="{{ url_for('main.warehouse_page') }}">数据仓库管理</a></dd>
+            <dd><a href="{{ url_for('main.rules_page') }}">采集规则库</a></dd>
             <dd><a href="javascript:;">报告管理</a></dd>
             
             {% if current_user.role.name == 'admin' %}

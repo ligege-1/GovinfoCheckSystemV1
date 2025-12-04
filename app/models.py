@@ -54,6 +54,18 @@ class CollectionItem(db.Model):
     def __repr__(self):
         return '<CollectionItem {}>'.format(self.title)
 
+class CrawlRule(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    site = db.Column(db.String(256), unique=True, index=True)
+    title_xpath = db.Column(db.String(1024))
+    content_xpath = db.Column(db.String(2048))
+    headers_json = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return '<CrawlRule {}>'.format(self.site)
+
 @login.user_loader
 def load_user(id):
     return db.session.get(User, int(id))
