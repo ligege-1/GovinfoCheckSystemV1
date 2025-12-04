@@ -5,3 +5,4 @@ python-dotenv==1.0.0
 Flask-Login==0.6.3
 requests==2.31.0
 beautifulsoup4==4.12.3
+lxml==6.0.2

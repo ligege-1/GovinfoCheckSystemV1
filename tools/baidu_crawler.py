@@ -7,10 +7,10 @@ from bs4.element import Tag
 
 def crawl_baidu_news(keyword, max_count=20):
     """
-    爬取百度资讯搜索结果
+    爬取百度资讯搜索结果 (Generator Version)
     :param keyword: 搜索关键字
     :param max_count: 期望获取的最大数据量，默认为20
-    :return: 包含搜索结果的列表，每个元素为字典
+    :yield: 字典形式的新闻数据
     """
     base_url = "https://www.baidu.com/s"
     
@@ -34,12 +34,13 @@ def crawl_baidu_news(keyword, max_count=20):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
     }
 
-    all_results = []
+    count = 0
     seen_urls = set()
+    seen_titles = set() # 增加标题去重
     page = 0
     max_pages = 5 # 防止无限循环，最多爬取5页
     
-    while len(all_results) < max_count and page < max_pages:
+    while count < max_count and page < max_pages:
         pn = page * 10
         print(f"正在爬取第 {page + 1} 页 (pn={pn})...")
         
@@ -89,7 +90,13 @@ def crawl_baidu_news(keyword, max_count=20):
                     # 去重
                     if original_url in seen_urls:
                         continue
+                    
+                    # 标题去重，避免因为百度链接不同但内容相同导致重复
+                    if title in seen_titles:
+                        continue
+                        
                     seen_urls.add(original_url)
+                    seen_titles.add(title)
 
                     def _pick_src(e):
                         for k in ['src','data-src','data-ori','data-original','data-thumb','data-lazyload']:
@@ -161,15 +168,19 @@ def crawl_baidu_news(keyword, max_count=20):
                         "url": original_url,
                         "source": source
                     }
-                    all_results.append(news_data)
+                    yield news_data
+                    count += 1
                     
-                    if len(all_results) >= max_count:
+                    if count >= max_count:
                         break
                     
                 except Exception as e:
                     print(f"Error parsing item: {e}")
                     continue
             
+            if count >= max_count:
+                break
+
             page += 1
             # 随机延时，避免被封
             time.sleep(random.uniform(1, 2))
@@ -177,8 +188,6 @@ def crawl_baidu_news(keyword, max_count=20):
         except Exception as e:
             print(f"Crawler error on page {page}: {e}")
             break
-            
-    return all_results
 
 import json
 from lxml import etree
@@ -287,21 +296,21 @@ def deep_collect_content(url, timeout=10):
 
 def crawl_xinhua_sc_news(max_count=20):
     """
-    爬取新华网四川新闻页，返回与百度新闻一致的数据结构
+    爬取新华网四川新闻页，返回与百度新闻一致的数据结构 (Generator Version)
     数据源: http://sc.news.cn/scyw.htm
-    返回: List[Dict]，每项包含 title, cover, url, source
+    yield: Dict，每项包含 title, cover, url, source
     """
     base_url = "http://sc.news.cn/scyw.htm"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
-    results = []
+    count = 0
     seen = set()
     try:
         r = requests.get(base_url, headers=headers, timeout=10)
         r.encoding = r.apparent_encoding or 'utf-8'
         if r.status_code != 200:
-            return results
+            return
         soup = BeautifulSoup(r.text, 'html.parser')
 
         def pick_src(e):
@@ -418,31 +427,34 @@ def crawl_xinhua_sc_news(max_count=20):
                 if st:
                     source = st
 
-            results.append({
+            yield {
                 'title': title,
                 'cover': cover,
                 'url': url,
                 'source': source
-            })
-            if len(results) >= max_count:
+            }
+            count += 1
+            if count >= max_count:
                 break
 
     except Exception:
-        return results
-    return results
+        pass
 
 if __name__ == "__main__":
     keyword = "西昌"
     print(f"开始爬取关键字: {keyword}")
-    data = crawl_baidu_news(keyword)
+    data_gen = crawl_baidu_news(keyword)
     
-    if data:
-        print(f"共抓取到 {len(data)} 条数据:")
-        for i, item in enumerate(data, 1):
-            print(f"\n[{i}]")
-            print(f"标题: {item['title']}")
-            print(f"封面: {item['cover']}")
-            print(f"原始URL: {item['url']}")
-            print(f"来源: {item['source']}")
+    results = []
+    for i, item in enumerate(data_gen, 1):
+        print(f"\n[{i}]")
+        print(f"标题: {item['title']}")
+        print(f"封面: {item['cover']}")
+        print(f"原始URL: {item['url']}")
+        print(f"来源: {item['source']}")
+        results.append(item)
+
+    if results:
+        print(f"共抓取到 {len(results)} 条数据")
     else:
         print("未抓取到任何数据。")

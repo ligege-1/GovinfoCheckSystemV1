@@ -51,12 +51,31 @@ class CollectionItem(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Relationship to DeepCollectionContent
+    deep_content_obj = db.relationship('DeepCollectionContent', backref='collection_item', uselist=False, cascade="all, delete-orphan")
+
+    # Relationship to CrawlRule
+    rule_id = db.Column(db.Integer, db.ForeignKey('crawl_rule.id'), nullable=True)
+    rule = db.relationship('CrawlRule', backref='collection_items')
+
     def __repr__(self):
         return '<CollectionItem {}>'.format(self.title)
 
+class DeepCollectionContent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text)
+    item_id = db.Column(db.Integer, db.ForeignKey('collection_item.id'), unique=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return '<DeepCollectionContent item_id={}>'.format(self.item_id)
+
 class CrawlRule(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    site = db.Column(db.String(256), unique=True, index=True)
+    name = db.Column(db.String(256), default='未命名规则') # 规则名称
+    site = db.Column(db.String(256), unique=False, index=True) # 站点域名 或 来源名称
+    match_type = db.Column(db.String(64), default='domain') # domain 或 source
     title_xpath = db.Column(db.String(1024))
     content_xpath = db.Column(db.String(2048))
     headers_json = db.Column(db.Text)
@@ -64,7 +83,20 @@ class CrawlRule(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __repr__(self):
-        return '<CrawlRule {}>'.format(self.site)
+        return '<CrawlRule {}>'.format(self.name or self.site)
+
+class AiEngine(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    provider = db.Column(db.String(64), nullable=False) # Service Provider Name (e.g., OpenAI, DeepSeek)
+    api_url = db.Column(db.String(256), nullable=False) # API Base URL
+    api_key = db.Column(db.String(256), nullable=False) # API Key
+    model_name = db.Column(db.String(128), nullable=False) # Model Name (e.g., gpt-4, deepseek-chat)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return '<AiEngine {} - {}>'.format(self.provider, self.model_name)
 
 @login.user_loader
 def load_user(id):

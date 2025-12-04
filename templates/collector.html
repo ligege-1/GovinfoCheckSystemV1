@@ -55,6 +55,7 @@ layui.use(['form','layer','element'], function(){
   var $ = layui.$;
 
   var state = { items: [], keyword: '', total: 0, source: 'baidu' };
+  var defaultAvatar = "{{ url_for('static', filename='images/avatar.svg') }}";
 
   function updateProgress(current, total){
     var percent = total ? Math.round((current/total)*100) : 0;
@@ -69,7 +70,7 @@ layui.use(['form','layer','element'], function(){
         '<div class="layui-card">' +
           '<div class="layui-card-body" style="min-height:220px;">' +
             '<div style="text-align:center;margin-bottom:8px;">' +
-              '<a href="'+ item.url +'" target="_blank"><img src="'+ (item.cover||"{{ url_for('static', filename='images/avatar.svg') }}") +'" style="max-width:100%;max-height:120px;" onerror="this.src=\'{{ url_for(\'static\', filename=\'images/avatar.svg\') }}\';this.onerror=null;"></a>' +
+              '<a href="'+ item.url +'" target="_blank"><img src="'+ (item.cover||defaultAvatar) +'" style="max-width:100%;max-height:120px;" onerror="this.src=\''+ defaultAvatar +'\';this.onerror=null;"></a>' +
             '</div>' +
             '<div style="font-weight:600;margin-bottom:6px;"><a href="'+ item.url +'" target="_blank" class="layui-table-link">'+ item.title +'</a></div>' +
             '<div style="color:#888;margin-bottom:8px;">来源：'+ item.source +'</div>' +
@@ -79,7 +80,9 @@ layui.use(['form','layer','element'], function(){
               '</div>' +
               '<div>' +
                 '<button class="layui-btn layui-btn-xs" data-action="deep" data-index="'+ idx +'">深度采集</button>' +
-                '<button class="layui-btn layui-btn-warm layui-btn-xs" data-action="store" data-index="'+ idx +'" style="margin-left:6px;">存储</button>' +
+                (item.stored ? 
+                  '<button class="layui-btn layui-btn-disabled layui-btn-xs" style="margin-left:6px;">已存储</button>' : 
+                  '<button class="layui-btn layui-btn-warm layui-btn-xs" data-action="store" data-index="'+ idx +'" style="margin-left:6px;">存储</button>') +
                 '<span class="layui-badge '+ (item.deep_collected ? 'layui-bg-green' : 'layui-bg-gray') +'" style="margin-left:6px;">'+ (item.deep_collected ? '已深度' : '未深度') +'</span>' +
               '</div>' +
             '</div>' +
@@ -149,6 +152,8 @@ layui.use(['form','layer','element'], function(){
     }).done(function(res){
       layer.closeAll('loading');
       layer.msg('已存储，ID: ' + res.id);
+      item.stored = true;
+      renderGrid();
     }).fail(function(){
       layer.closeAll('loading');
       layer.msg('存储失败', {icon:2});
@@ -166,9 +171,32 @@ layui.use(['form','layer','element'], function(){
     }).done(function(res){
       item.deep_collected = true;
       item.deep_content = res.deep_content;
-      renderGrid();
-      layer.closeAll('loading');
-      layer.msg('深度采集完成');
+      
+      // Auto save after deep collection
+      $.ajax({
+        url: '/collector/save_one', method: 'POST', contentType: 'application/json',
+        data: JSON.stringify({
+          keyword: state.keyword,
+          item: {
+            title: item.title,
+            cover: item.cover,
+            url: item.url,
+            source: item.source,
+            deep_collected: item.deep_collected,
+            deep_content: item.deep_content
+          }
+        })
+      }).done(function(saveRes){
+        item.stored = true;
+        renderGrid();
+        layer.closeAll('loading');
+        layer.msg('深度采集并保存成功');
+      }).fail(function(){
+        renderGrid();
+        layer.closeAll('loading');
+        layer.msg('深度采集成功，但自动保存失败', {icon:3});
+      });
+      
     }).fail(function(){
       layer.closeAll('loading');
       layer.msg('深度采集失败', {icon:2});

@@ -1,0 +1,366 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layui-card">
+  <div class="layui-card-header">
+    <span>AI 引擎管理</span>
+    <button class="layui-btn layui-btn-sm layui-layout-right" id="add-engine-btn" style="margin-top: 10px; margin-right: 15px;">
+      <i class="layui-icon layui-icon-add-1"></i> 新增引擎
+    </button>
+  </div>
+  <div class="layui-card-body" style="background-color: #f2f2f2; padding: 15px;">
+    <div class="layui-row layui-col-space15" id="engine-list">
+      <!-- Engines will be rendered here -->
+    </div>
+  </div>
+</div>
+
+<style>
+  .engine-card {
+    transition: all 0.3s;
+    cursor: pointer;
+  }
+  .engine-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .engine-status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 5px;
+  }
+  .status-active { background-color: #5FB878; }
+  .status-inactive { background-color: #FF5722; }
+  .api-key-mask {
+    font-family: monospace;
+    color: #999;
+  }
+</style>
+
+<script>
+layui.use(['layer', 'form', 'element'], function(){
+  var layer = layui.layer;
+  var form = layui.form;
+  var $ = layui.$;
+
+  function loadEngines(){
+    $.getJSON('/ai_engines/list', function(res){
+      var html = '';
+      if(res.items.length === 0){
+        html = '<div class="layui-col-md12" style="text-align:center;color:#999;padding:50px;">暂无 AI 引擎，请点击右上角添加</div>';
+      } else {
+        res.items.forEach(function(item){
+          var statusHtml = item.is_active 
+            ? '<span class="engine-status-dot status-active"></span><span style="color:#5FB878">运行中</span>' 
+            : '<span class="engine-status-dot status-inactive"></span><span style="color:#FF5722">已停用</span>';
+          
+          html += `
+            <div class="layui-col-md4 layui-col-sm6">
+              <div class="layui-card engine-card">
+                <div class="layui-card-header">
+                  <strong>${item.provider}</strong>
+                  <div class="layui-layout-right" style="padding-right: 15px;">${statusHtml}</div>
+                </div>
+                <div class="layui-card-body">
+                  <p><i class="layui-icon layui-icon-engine"></i> 模型: <b>${item.model_name}</b></p>
+                  <p style="margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${item.api_url}">
+                    <i class="layui-icon layui-icon-website"></i> 接口: ${item.api_url}
+                  </p>
+                  <p style="margin-top:5px;">
+                    <i class="layui-icon layui-icon-password"></i> Key: <span class="api-key-mask">******${item.api_key.substr(-4)}</span>
+                  </p>
+                  <hr>
+                  <div style="text-align: right;">
+                    <button class="layui-btn layui-btn-xs layui-btn-normal" onclick="testChat(${item.id}, '${item.model_name}')">测试对话</button>
+                    <button class="layui-btn layui-btn-xs layui-btn-primary" onclick="editEngine(${item.id})">编辑</button>
+                    <button class="layui-btn layui-btn-xs layui-btn-danger" onclick="deleteEngine(${item.id})">删除</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+        });
+      }
+      $('#engine-list').html(html);
+    });
+  }
+
+  window.testChat = function(id, modelName){
+    var html = `
+      <div class="layui-card" style="margin:0; box-shadow:none;">
+        <div class="layui-card-body" style="padding:0;">
+          <div id="chat-history" style="height: 350px; overflow-y: auto; padding: 15px; background: #f8f8f8; border-bottom: 1px solid #eee;">
+            <div style="text-align:center;color:#999;margin-top:10px;">正在与 <b>${modelName}</b> 对话</div>
+          </div>
+          <div style="padding: 10px; display: flex;">
+            <input type="text" id="chat-input" class="layui-input" placeholder="请输入测试内容..." style="flex: 1; margin-right: 10px;">
+            <button class="layui-btn" id="send-chat-btn"><i class="layui-icon layui-icon-release"></i> 发送</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    layer.open({
+      type: 1,
+      title: '模型对话测试',
+      area: ['600px', '500px'],
+      content: html,
+      success: function(layero, index){
+        var $history = $('#chat-history');
+        var $input = $('#chat-input');
+        
+        function appendMsg(role, text){
+            var color = role === 'user' ? '#007bff' : '#333';
+            var bg = role === 'user' ? '#e6f2ff' : '#fff';
+            var align = role === 'user' ? 'right' : 'left';
+            var item = `
+                <div style="margin-bottom: 10px; text-align: ${align};">
+                    <div style="display:inline-block; padding: 8px 12px; background: ${bg}; color: ${color}; border-radius: 8px; max-width: 80%; text-align: left; border: 1px solid #eee;">
+                        ${text}
+                    </div>
+                </div>
+            `;
+            $history.append(item);
+            $history.scrollTop($history[0].scrollHeight);
+        }
+
+        function sendMsg(){
+            var msg = $input.val().trim();
+            if(!msg) return;
+            
+            appendMsg('user', msg);
+            $input.val('');
+            $input.prop('disabled', true);
+            
+            var loadingId = layer.msg('思考中...', {icon: 16, shade: 0.01, time: 0});
+            
+            $.ajax({
+                url: '/ai_engines/test_chat',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ id: id, message: msg })
+            }).done(function(res){
+                layer.close(loadingId);
+                if(res.error){
+                    appendMsg('system', '错误: ' + res.error);
+                } else {
+                    appendMsg('assistant', res.reply);
+                }
+            }).fail(function(xhr){
+                layer.close(loadingId);
+                appendMsg('system', '请求失败: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
+            }).always(function(){
+                $input.prop('disabled', false);
+                $input.focus();
+            });
+        }
+
+        $('#send-chat-btn').on('click', sendMsg);
+        $input.on('keypress', function(e){
+            if(e.which === 13) sendMsg();
+        });
+        
+        $input.focus();
+      }
+    });
+  };
+
+  window.editEngine = function(id){
+    // Fetch details (or find in local cache if we had one, but fetch is safer)
+    // For simplicity, we can reload list or store data in DOM. 
+    // Let's just use the list data since we have it in memory if we want, but better to just pass data or find it.
+    // Re-fetching list item locally from DOM or global var is easy.
+    $.getJSON('/ai_engines/list', function(res){
+      var item = res.items.find(x => x.id === id);
+      if(!item) return;
+      openForm(item);
+    });
+  };
+
+  window.deleteEngine = function(id){
+    layer.confirm('确定要删除该 AI 引擎吗？', function(index){
+      $.ajax({
+        url: '/ai_engines/delete',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({id: id})
+      }).done(function(){
+        layer.msg('已删除');
+        loadEngines();
+      }).fail(function(){
+        layer.msg('删除失败', {icon: 2});
+      });
+      layer.close(index);
+    });
+  };
+
+  function openForm(data){
+    var isEdit = !!data;
+    var html = `
+      <div style="padding: 20px;">
+        <form class="layui-form" lay-filter="engine-form">
+          <div class="layui-form-item">
+            <label class="layui-form-label">服务商</label>
+            <div class="layui-input-block">
+              <input type="text" name="provider" required lay-verify="required" placeholder="例如: OpenAI, DeepSeek" autocomplete="off" class="layui-input" value="${data ? data.provider : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">API URL</label>
+            <div class="layui-input-block">
+              <input type="text" name="api_url" required lay-verify="required" placeholder="例如: https://api.openai.com/v1" autocomplete="off" class="layui-input" value="${data ? data.api_url : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">API Key</label>
+            <div class="layui-input-block">
+              <input type="password" name="api_key" required lay-verify="required" placeholder="sk-..." autocomplete="off" class="layui-input" value="${data ? data.api_key : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">模型名称</label>
+            <div class="layui-input-block">
+              <input type="text" name="model_name" required lay-verify="required" placeholder="例如: gpt-4o" autocomplete="off" class="layui-input" value="${data ? data.model_name : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">状态</label>
+            <div class="layui-input-block">
+              <input type="checkbox" name="is_active" lay-skin="switch" lay-text="开启|关闭" ${(!data || data.is_active) ? 'checked' : ''}>
+            </div>
+          </div>
+          <div class="layui-form-item" style="text-align: right; margin-top: 30px;">
+            <button class="layui-btn" lay-submit lay-filter="save-engine">保存</button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    var idx = layer.open({
+      type: 1,
+      title: isEdit ? '编辑 AI 引擎' : '新增 AI 引擎',
+      area: ['500px', '450px'],
+      content: html,
+      success: function(){
+        form.render();
+      }
+    });
+
+    form.on('submit(save-engine)', function(data){
+      var payload = data.field;
+      // Checkbox handling: if checked, it's 'on', otherwise undefined in form serialization usually, 
+      // but layui switch might return value if set. 
+      // Let's fix boolean.
+      payload.is_active = (payload.is_active === 'on'); 
+      
+      var url = isEdit ? '/ai_engines/update' : '/ai_engines/create';
+      if(isEdit) payload.id = isEdit ? Number(isEdit.id) : undefined; // Wait, 'isEdit' is boolean above? No, it's '!!data'.
+      // Ah, I need the ID.
+      if(isEdit && data && typeof openForm.arguments[0] === 'object') {
+          payload.id = openForm.arguments[0].id; 
+      }
+      // Better way:
+      if(isEdit) payload.id = arguments[0].form ? null : (window.currentEditId); // wait, closure issue.
+
+      // Let's just pass ID in payload from the beginning if editing
+      // Or simpler:
+    });
+  }
+  
+  // Redefine openForm to handle submit better
+  var currentEditId = null;
+  
+  $('#add-engine-btn').on('click', function(){
+    currentEditId = null;
+    openFormModal(null);
+  });
+
+  function openFormModal(data){
+    currentEditId = data ? data.id : null;
+    var html = `
+      <div style="padding: 20px;">
+        <form class="layui-form" lay-filter="engine-form">
+          <div class="layui-form-item">
+            <label class="layui-form-label">服务商</label>
+            <div class="layui-input-block">
+              <input type="text" name="provider" required lay-verify="required" placeholder="例如: OpenAI, DeepSeek" autocomplete="off" class="layui-input" value="${data ? data.provider : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">API URL</label>
+            <div class="layui-input-block">
+              <input type="text" name="api_url" required lay-verify="required" placeholder="例如: https://api.openai.com/v1" autocomplete="off" class="layui-input" value="${data ? data.api_url : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">API Key</label>
+            <div class="layui-input-block">
+              <input type="password" name="api_key" required lay-verify="required" placeholder="sk-..." autocomplete="off" class="layui-input" value="${data ? data.api_key : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">模型名称</label>
+            <div class="layui-input-block">
+              <input type="text" name="model_name" required lay-verify="required" placeholder="例如: gpt-4o" autocomplete="off" class="layui-input" value="${data ? data.model_name : ''}">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">状态</label>
+            <div class="layui-input-block">
+              <input type="checkbox" name="is_active" lay-skin="switch" lay-text="开启|关闭" ${(!data || data.is_active) ? 'checked' : ''}>
+            </div>
+          </div>
+          <div class="layui-form-item" style="text-align: right; margin-top: 30px;">
+            <button class="layui-btn" lay-submit lay-filter="save-engine">保存</button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    var idx = layer.open({
+      type: 1,
+      title: data ? '编辑 AI 引擎' : '新增 AI 引擎',
+      area: ['500px', '450px'],
+      content: html,
+      success: function(){
+        form.render();
+      }
+    });
+
+    form.on('submit(save-engine)', function(formData){
+      var payload = formData.field;
+      payload.is_active = (payload.is_active === 'on');
+      if(currentEditId) payload.id = currentEditId;
+
+      var url = currentEditId ? '/ai_engines/update' : '/ai_engines/create';
+      
+      $.ajax({
+        url: url,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(payload)
+      }).done(function(){
+        layer.close(idx);
+        layer.msg('保存成功');
+        loadEngines();
+      }).fail(function(){
+        layer.msg('保存失败', {icon: 2});
+      });
+      return false; // Prevent form submit
+    });
+  }
+
+  // Bind edit function to window so onclick works
+  window.editEngine = function(id){
+     $.getJSON('/ai_engines/list', function(res){
+      var item = res.items.find(x => x.id === id);
+      if(item) openFormModal(item);
+    });
+  }
+
+  loadEngines();
+});
+</script>
+{% endblock %}

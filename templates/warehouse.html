@@ -15,7 +15,9 @@
         <div class="layui-inline">
           <button class="layui-btn" id="search-btn">查询</button>
           <button class="layui-btn layui-btn-warm" id="batch-deep-btn">详细内容采集</button>
-          <button class="layui-btn layui-btn-danger" id="refresh-btn">刷新</button>
+          <button class="layui-btn layui-btn-normal" id="auto-assoc-btn">一键自动关联</button>
+          <button class="layui-btn layui-btn-danger" id="batch-del-btn">批量删除</button>
+          <button class="layui-btn layui-btn-primary" id="refresh-btn">刷新</button>
         </div>
       </div>
     </form>
@@ -49,23 +51,39 @@ layui.use(['layer','element'], function(){
   var $ = layui.$;
 
   var state = { page: 1, size: 20, keyword: '' };
+  var defaultAvatar = "{{ url_for('static', filename='images/avatar.svg') }}";
+  var warehouseItems = {}; // Store items by ID
 
   function loadData(){
     var url = '/warehouse/list?page=' + state.page + '&size=' + state.size + '&keyword=' + encodeURIComponent(state.keyword);
     $.getJSON(url, function(res){
       var rows = '';
+      warehouseItems = {}; // Reset
       res.items.forEach(function(it){
+        warehouseItems[it.id] = it;
+        
+        var sourceDisplay = it.source || '';
+        if(it.domain){
+            sourceDisplay += '<div style="color:#999;font-size:12px;">' + it.domain + '</div>';
+        }
+        var sourceClass = '';
+        if(it.rule_id){
+            sourceDisplay = '<span class="layui-badge layui-bg-green" style="margin-right:5px;">关联</span>' + sourceDisplay;
+            sourceClass = 'style="background-color:#f0f9eb;"'; // Light green background for the cell
+        }
+        
         rows += '<tr>' +
           '<td><input type="checkbox" class="wh-check" value="'+ it.id +'"></td>' +
           '<td>'+ it.id +'</td>' +
           '<td>'+ (it.title||'') +'</td>' +
-          '<td>'+ (it.source||'') +'</td>' +
-          '<td><img src="'+ (it.cover||"{{ url_for('static', filename='images/avatar.svg') }}") +'" style="max-height:40px;" onerror="this.src=\'{{ url_for('static', filename='images/avatar.svg') }}\'" /></td>' +
+          '<td '+ sourceClass +'>'+ sourceDisplay +'</td>' +
+          '<td><img src="'+ (it.cover||defaultAvatar) +'" style="max-height:40px;" onerror="this.src=\''+ defaultAvatar +'\'" /></td>' +
           '<td><a href="'+ (it.url||'#') +'" target="_blank">链接</a></td>' +
           '<td>'+ (it.deep_collected ? '是' : '否') +'</td>' +
           '<td>'+ (it.created_at||'') +'</td>' +
           '<td>' +
             '<button class="layui-btn layui-btn-xs" data-action="edit" data-id="'+ it.id +'">编辑</button>' +
+            '<button class="layui-btn layui-btn-normal layui-btn-xs" data-action="preview" data-id="'+ it.id +'" style="margin-left:6px;">预览</button>' +
             '<button class="layui-btn layui-btn-danger layui-btn-xs" data-action="del" data-id="'+ it.id +'" style="margin-left:6px;">删除</button>' +
           '</td>' +
         '</tr>';
@@ -80,6 +98,26 @@ layui.use(['layer','element'], function(){
     $('.wh-check').prop('checked', checked);
   });
 
+  $('#auto-assoc-btn').on('click', function(){
+    layer.confirm('确认执行一键自动关联？<br>系统将根据[域名+来源名称]自动匹配规则库。', {icon: 3, title:'自动关联'}, function(index){
+        layer.load(1);
+        $.ajax({
+            url: '/warehouse/auto_associate',
+            method: 'POST',
+            contentType: 'application/json'
+        }).done(function(res){
+            layer.closeAll('loading');
+            layer.msg('已自动关联 ' + res.associated + ' 条数据');
+            loadData();
+        }).fail(function(xhr){
+            layer.closeAll('loading');
+            layer.msg('关联失败: ' + (xhr.responseJSON ? xhr.responseJSON.error : '未知错误'), {icon: 2});
+        });
+        layer.close(index);
+    });
+    return false;
+  });
+
   $('#batch-deep-btn').on('click', function(){
     var ids = [];
     $('.wh-check:checked').each(function(){
@@ -89,22 +127,91 @@ layui.use(['layer','element'], function(){
       layer.msg('请先选择要采集的数据');
       return false;
     }
-    layer.confirm('确认对选中的 ' + ids.length + ' 条数据进行详细内容采集？<br><span style="color:red;font-size:12px;">将优先使用匹配站点的采集规则</span>', function(index){
+
+    // Fetch rules first
+    $.getJSON('/rules/list', function(res){
+        var rules = res.items || [];
+        var optionsHtml = '<option value="">-- 自动匹配 (默认) --</option>';
+        rules.forEach(function(r){
+            optionsHtml += '<option value="'+r.id+'">[' + (r.match_type=='source'?'来源':'域名') + '] ' + (r.name||'未命名') + ' - ' + r.site + '</option>';
+        });
+
+        var contentHtml = '<div style="padding: 20px;">' +
+            '<div style="margin-bottom: 15px;">共选中 <span style="color:red;font-weight:bold;">' + ids.length + '</span> 条数据</div>' +
+            '<div class="layui-form-item">' +
+            '<label class="layui-form-label" style="width: 80px; padding-left:0;">采集策略</label>' +
+            '<div class="layui-input-block" style="margin-left: 90px;">' +
+            '<select id="deep-rule-select" class="layui-input" style="display:block;">' +
+            optionsHtml +
+            '</select>' +
+            '<div style="color:#999;font-size:12px;margin-top:5px;">默认自动匹配：根据来源名称或域名自动查找规则。<br>手动指定：强制所有选中项使用指定规则。</div>' +
+            '</div>' +
+            '</div>' +
+            '</div>';
+
+        layer.open({
+            type: 1,
+            title: '批量详细内容采集',
+            area: ['500px', '300px'],
+            content: contentHtml,
+            btn: ['开始采集', '取消'],
+            yes: function(index, layero){
+                var ruleId = $('#deep-rule-select').val();
+                var payload = { ids: ids };
+                if(ruleId) {
+                    payload.rule_id = Number(ruleId);
+                }
+
+                layer.close(index);
+                layer.load(1);
+                
+                $.ajax({
+                    url: '/warehouse/batch_deep',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload)
+                })
+                .done(function(res){
+                    layer.closeAll('loading');
+                    layer.msg('已完成 ' + res.processed + ' 条数据的详细采集');
+                    loadData();
+                })
+                .fail(function(){
+                    layer.closeAll('loading');
+                    layer.msg('采集失败', {icon: 2});
+                });
+            }
+        });
+    });
+    
+    return false;
+  });
+
+  $('#batch-del-btn').on('click', function(){
+    var ids = [];
+    $('.wh-check:checked').each(function(){
+      ids.push(Number($(this).val()));
+    });
+    if(ids.length === 0){
+      layer.msg('请先选择要删除的数据');
+      return false;
+    }
+    layer.confirm('确认删除选中的 ' + ids.length + ' 条数据？<br><span style="color:red;">此操作不可恢复！</span>', {icon: 3, title:'危险操作'}, function(index){
       layer.load(1);
       $.ajax({
-        url: '/warehouse/batch_deep',
+        url: '/warehouse/batch_delete',
         method: 'POST',
         contentType: 'application/json',
         data: JSON.stringify({ ids: ids })
       })
       .done(function(res){
         layer.closeAll('loading');
-        layer.msg('已完成 ' + res.processed + ' 条数据的详细采集');
+        layer.msg('已删除 ' + res.deleted + ' 条数据');
         loadData();
       })
       .fail(function(){
         layer.closeAll('loading');
-        layer.msg('采集失败', {icon: 2});
+        layer.msg('删除失败', {icon: 2});
       });
       layer.close(index);
     });
@@ -141,6 +248,58 @@ layui.use(['layer','element'], function(){
     });
   });
 
+  $(document).on('click', 'button[data-action="preview"]', function(){
+    var id = $(this).attr('data-id');
+    var item = warehouseItems[id];
+    if(!item){ layer.msg('数据未找到'); return; }
+    
+    var content = item.deep_content || '<div style="color:#ccc;text-align:center;padding:20px;">暂无内容</div>';
+    
+    var html = '<div style="height:100%;display:flex;flex-direction:column;">' +
+      '<div style="flex:1;overflow-y:auto;padding:20px;background:#fff;" id="preview-container">' + content + '</div>' +
+      '<div style="padding:10px;border-top:1px solid #eee;text-align:right;background:#f8f8f8;">' +
+        '<button class="layui-btn" id="preview-save">保存内容</button>' +
+      '</div>' +
+    '</div>';
+    
+    var idx = layer.open({
+      type: 1,
+      title: '预览: ' + (item.title || '无标题'),
+      area: ['800px', '600px'],
+      content: html,
+      success: function(layero, index){
+        // Make content editable to allow saving changes?
+        // The user said "save collected content".
+        // If we just display HTML, editing is hard without a rich text editor.
+        // But maybe they just want to verify?
+        // "can view collected content, save collected content in database"
+        // This implies if they like it, they keep it. But it is ALREADY in DB.
+        // Maybe they want to EDIT it.
+        // Let's make it `contentEditable` just in case, or provide a toggle?
+        // Let's make it contentEditable for now.
+        $('#preview-container').attr('contenteditable', 'true').css('outline', 'none');
+        layer.tips('内容区域可直接编辑', '#preview-container', {tips: [1, '#3595CC'], time: 4000});
+      }
+    });
+    
+    $('#preview-save').on('click', function(){
+       var newContent = $('#preview-container').html();
+       layer.load(1);
+       $.ajax({
+         url: '/warehouse/update', method: 'POST', contentType: 'application/json',
+         data: JSON.stringify({ id: Number(id), deep_content: newContent })
+       }).done(function(){
+         layer.closeAll('loading');
+         layer.msg('内容已更新');
+         // Update local cache
+         if(warehouseItems[id]){ warehouseItems[id].deep_content = newContent; }
+       }).fail(function(){
+         layer.closeAll('loading');
+         layer.msg('保存失败', {icon:2});
+       });
+    });
+  });
+
   $(document).on('click', 'button[data-action="edit"]', function(){
     var id = $(this).attr('data-id');
     var tr = $(this).closest('tr');
@@ -158,6 +317,13 @@ layui.use(['layer','element'], function(){
       '<div style="text-align:right;"><button class="layui-btn" id="edit-save">保存</button></div>' +
       '</div>';
     var idx = layer.open({ type:1, area:['640px','520px'], content: html, title: '编辑' });
+    
+    // Fill the content
+    var item = warehouseItems[id];
+    if(item && item.deep_content){
+        $('#edit-content').val(item.deep_content);
+    }
+
     $('#edit-save').on('click', function(){
       layer.load(1);
       $.ajax({
