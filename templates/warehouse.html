@@ -16,6 +16,7 @@
           <button class="layui-btn" id="search-btn">查询</button>
           <button class="layui-btn layui-btn-warm" id="batch-deep-btn">批量深度采集</button>
           <button class="layui-btn layui-btn-normal" id="auto-assoc-btn">一键自动关联</button>
+          <button class="layui-btn layui-btn-primary" id="select-assoc-btn" title="选中当前页已关联规则的数据" style="border-color: #1E9FFF; color: #1E9FFF;">选中已关联</button>
           <button class="layui-btn layui-btn-danger" id="batch-del-btn">批量删除</button>
           <button class="layui-btn layui-btn-primary" id="refresh-btn">刷新</button>
         </div>
@@ -140,6 +141,19 @@ layui.use(['layer','element','laypage'], function(){
         });
         layer.close(index);
     });
+    return false;
+  });
+
+  $('#select-assoc-btn').on('click', function(){
+    $('.wh-check').prop('checked', false);
+    var count = 0;
+    $.each(warehouseItems, function(id, it){
+      if(it.rule_id){
+        $('.wh-check[value="'+it.id+'"]').prop('checked', true);
+        count++;
+      }
+    });
+    layer.msg('已选中 ' + count + ' 条关联数据');
     return false;
   });
 
