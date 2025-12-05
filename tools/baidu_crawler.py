@@ -530,6 +530,232 @@ def crawl_xinhua_sc_news(max_count=20):
     except Exception:
         pass
 
+def crawl_generic(config, keyword, max_count=20, max_pages=5):
+    """
+    通用爬虫执行器
+    :param config: CrawlerConfig 字典
+    :param keyword: 搜索关键字
+    :param max_count: 最大数量
+    :param max_pages: 最大页数
+    """
+    # 替换参数中的变量
+    base_url = config.get('base_url')
+    params_tpl = config.get('params_json')
+    headers_tpl = config.get('headers_json')
+    method = config.get('method', 'GET')
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
+    if headers_tpl:
+        try:
+            h_custom = json.loads(headers_tpl)
+            headers.update(h_custom)
+        except:
+            pass
+            
+    # 解析选择器
+    list_selector = config.get('list_selector')
+    title_selector = config.get('title_selector')
+    url_selector = config.get('url_selector')
+    cover_selector = config.get('cover_selector')
+    source_selector = config.get('source_selector')
+    
+    count = 0
+    seen_urls = set()
+    page = 0
+    
+    while count < max_count and page < max_pages:
+        # 构建请求参数
+        params = {}
+        if params_tpl:
+            try:
+                # 简单替换 {keyword}, {page}
+                p_str = params_tpl.replace('{keyword}', keyword).replace('{page}', str(page+1)).replace('{page0}', str(page))
+                params = json.loads(p_str)
+            except Exception as e:
+                print(f"Params parse error: {e}")
+                pass
+        
+        # 处理URL中的占位符
+        url = base_url.replace('{keyword}', urllib.parse.quote(keyword)).replace('{page}', str(page+1))
+        
+        try:
+            print(f"Generic crawl: {url} page={page}")
+            if method.upper() == 'POST':
+                resp = requests.post(url, data=params, headers=headers, timeout=10)
+            else:
+                resp = requests.get(url, params=params, headers=headers, timeout=10)
+                
+            resp.encoding = resp.apparent_encoding or 'utf-8'
+            
+            if resp.status_code != 200:
+                print(f"Status code: {resp.status_code}")
+                break
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            items = []
+            if list_selector:
+                if list_selector.startswith('js_var:'):
+                    # Handle JavaScript variable extraction
+                    var_name = list_selector.split('js_var:')[1].strip()
+                    pattern = r'var\s+' + re.escape(var_name) + r'\s*=\s*(\[.*?\]);'
+                    match = re.search(pattern, resp.text, re.DOTALL)
+                    if match:
+                        try:
+                            json_str = match.group(1)
+                            items = json.loads(json_str)
+                        except json.JSONDecodeError as e:
+                            print(f"JSON parse error for var {var_name}: {e}")
+                    else:
+                        print(f"Variable {var_name} not found in response")
+                else:
+                    items = soup.select(list_selector)
+            else:
+                # 简单兜底
+                items = soup.find_all('div', class_=re.compile(r'item|list|news|article'))
+                
+            if not items:
+                print("No items found")
+                break
+                
+            for item in items:
+                try:
+                    title = "无标题"
+                    link = ""
+                    cover = ""
+                    source = config.get('name')
+                    
+                    if isinstance(item, dict):
+                        # Dictionary item (from JS/JSON)
+                        if title_selector and title_selector in item:
+                            t_val = item.get(title_selector)
+                            if isinstance(t_val, list):
+                                t_val = "".join([str(x) for x in t_val])
+                            title = str(t_val) if t_val else "无标题"
+                            # Remove HTML tags from title if present
+                            title = re.sub(r'<[^>]+>', '', title)
+                        
+                        if url_selector and url_selector in item:
+                            link = item.get(url_selector, "")
+                            if link and not link.startswith('http'):
+                                link = urllib.parse.urljoin(url, link)
+                        
+                        if cover_selector and cover_selector in item:
+                            cover = item.get(cover_selector, "")
+                            if cover and not cover.startswith('http'):
+                                cover = urllib.parse.urljoin(url, cover)
+                        
+                        # Handle cover_selector with pipe for dict items
+                        if not cover and cover_selector and '|' in cover_selector:
+                            key = cover_selector.split('|')[0].strip()
+                            if key in item:
+                                cover = item.get(key, "")
+                                if cover and not cover.startswith('http'):
+                                    cover = urllib.parse.urljoin(url, cover)
+                        
+                        # Source handling for dict
+                        if source_selector:
+                            if source_selector.startswith('fixed:'):
+                                source = source_selector.split('fixed:')[1]
+                            elif source_selector in item:
+                                source = item.get(source_selector, source)
+                    else:
+                        # BeautifulSoup Tag item
+                        if title_selector:
+                            t_el = item.select_one(title_selector)
+                            if t_el:
+                                title = t_el.get_text(strip=True)
+                                
+                        if url_selector:
+                            attr = 'href'
+                            sel = url_selector
+                            if ' (' in url_selector and url_selector.endswith(')'):
+                                parts = url_selector.split(' (')
+                                sel = parts[0]
+                                attr = parts[1][:-1]
+                                
+                            u_el = item.select_one(sel)
+                            if u_el:
+                                link = u_el.get(attr)
+                                if link and not link.startswith('http'):
+                                    link = urllib.parse.urljoin(url, link)
+                        
+                        if cover_selector:
+                            c_el = item.select_one(cover_selector)
+                            if c_el:
+                                for k in ['src', 'data-src', 'data-original']:
+                                    v = c_el.get(k)
+                                    if v:
+                                        cover = v
+                                        break
+                                if cover and not cover.startswith('http'):
+                                    cover = urllib.parse.urljoin(url, cover)
+                                    
+                        if source_selector:
+                            s_el = item.select_one(source_selector)
+                            if s_el:
+                                source = s_el.get_text(strip=True)
+
+                    if not link or link in seen_urls:
+                        continue
+                    seen_urls.add(link)
+                    
+                    # Deep cover extraction logic
+                    if not cover and cover_selector and '|deep:' in cover_selector and link:
+                        try:
+                            deep_sel = cover_selector.split('|deep:')[1].strip()
+                            # Fetch detail page
+                            headers_deep = headers.copy()
+                            headers_deep['Referer'] = url
+                            resp_deep = requests.get(link, headers=headers_deep, timeout=8)
+                            if resp_deep.status_code == 200:
+                                resp_deep.encoding = resp_deep.apparent_encoding or 'utf-8'
+                                soup_deep = BeautifulSoup(resp_deep.text, 'html.parser')
+                                imgs = soup_deep.select(deep_sel)
+                                for img in imgs:
+                                    src = ""
+                                    for k in ['src', 'data-src', 'data-original']:
+                                        v = img.get(k)
+                                        if v and v.strip():
+                                            src = v.strip()
+                                            break
+                                    if src:
+                                        # Filter out small icons or common placeholder patterns if needed
+                                        if 'sharelogo' in src or 'favicon' in src:
+                                            continue
+                                        if not src.startswith('http'):
+                                            src = urllib.parse.urljoin(link, src)
+                                        cover = src
+                                        break
+                        except Exception as e:
+                            print(f"Deep cover extraction error for {link}: {e}")
+
+                    yield {
+                        "title": title,
+                        "cover": cover,
+                        "url": link,
+                        "source": source
+                    }
+                    
+                    count += 1
+                    if count >= max_count:
+                        break
+                except Exception as e:
+                    print(f"Generic crawler parse item error: {e}")
+                    continue
+                    
+            if count >= max_count:
+                break
+                
+            page += 1
+            time.sleep(random.uniform(1, 2))
+            
+        except Exception as e:
+            print(f"Generic crawler page error: {e}")
+            break
+
 if __name__ == "__main__":
     keyword = "西昌"
     print(f"开始爬取关键字: {keyword}")

@@ -64,6 +64,16 @@ layui.use(['form','layer','element'], function(){
   var state = { items: [], keyword: '', total: 0, source: 'baidu' };
   var defaultAvatar = "{{ url_for('static', filename='images/avatar.svg') }}";
 
+  // 动态加载爬虫配置
+  $.get('/crawler/list_all', function(data){
+    var $sel = $('#source');
+    $sel.empty();
+    data.forEach(function(item){
+      $sel.append('<option value="'+item.id+'">'+item.name+'</option>');
+    });
+    form.render('select');
+  });
+
   function updateProgress(current, total){
     var percent = total ? Math.round((current/total)*100) : 0;
     element.progress('progress-filter', percent + '%');
@@ -73,7 +83,13 @@ layui.use(['form','layer','element'], function(){
   function renderGrid(){
     var html = '';
     state.items.forEach(function(item, idx){
-      html += '\n<div class="layui-col-md3" style="padding:8px;">' +
+      html += renderItem(item, idx);
+    });
+    $('#result-grid').html(html);
+  }
+
+  function renderItem(item, idx){
+    return '\n<div class="layui-col-md3" style="padding:8px;">' +
         '<div class="layui-card">' +
           '<div class="layui-card-body" style="min-height:220px;">' +
             '<div style="text-align:center;margin-bottom:8px;">' +
@@ -96,8 +112,6 @@ layui.use(['form','layer','element'], function(){
           '</div>' +
         '</div>' +
       '</div>';
-    });
-    $('#result-grid').html(html);
   }
 
   function updateSelectedCount(){
@@ -121,7 +135,10 @@ layui.use(['form','layer','element'], function(){
           updateProgress(0, state.total);
         } else if(msg.type === 'item'){
           state.items.push(msg.item);
-          renderGrid(); updateSelectedCount();
+          // 使用 append 而不是重绘
+          var newItemHtml = renderItem(msg.item, state.items.length - 1);
+          $('#result-grid').append(newItemHtml);
+          updateSelectedCount();
           var total = msg.total || state.total;
           updateProgress(state.items.length, total);
         } else if(msg.type === 'progress'){
@@ -160,7 +177,11 @@ layui.use(['form','layer','element'], function(){
       layer.closeAll('loading');
       layer.msg('已存储，ID: ' + res.id);
       item.stored = true;
-      renderGrid();
+      // 局部更新按钮状态
+      var $btn = $('button[data-action="store"][data-index="'+idx+'"]');
+      if($btn.length){
+        $btn.replaceWith('<button class="layui-btn layui-btn-disabled layui-btn-xs" style="margin-left:6px;">已存储</button>');
+      }
     }).fail(function(){
       layer.closeAll('loading');
       layer.msg('存储失败', {icon:2});
@@ -200,11 +221,25 @@ layui.use(['form','layer','element'], function(){
         })
       }).done(function(saveRes){
         item.stored = true;
-        renderGrid();
+        
+        // 局部更新
+        var $btnDeep = $('button[data-action="deep"][data-index="'+idx+'"]');
+        var $badge = $btnDeep.siblings('.layui-badge');
+        var $btnStore = $('button[data-action="store"][data-index="'+idx+'"]');
+        
+        $badge.removeClass('layui-bg-gray').addClass('layui-bg-green').text('已深度');
+        if($btnStore.length){
+            $btnStore.replaceWith('<button class="layui-btn layui-btn-disabled layui-btn-xs" style="margin-left:6px;">已存储</button>');
+        }
+        
         layer.closeAll('loading');
         layer.msg('深度采集并保存成功');
       }).fail(function(){
-        renderGrid();
+        // 局部更新深度采集状态
+        var $btnDeep = $('button[data-action="deep"][data-index="'+idx+'"]');
+        var $badge = $btnDeep.siblings('.layui-badge');
+        $badge.removeClass('layui-bg-gray').addClass('layui-bg-green').text('已深度');
+        
         layer.closeAll('loading');
         layer.msg('深度采集成功，但自动保存失败', {icon:3});
       });
@@ -225,7 +260,8 @@ layui.use(['form','layer','element'], function(){
   $(document).on('click', 'input[lay-filter="selectAll"]', function(){
     var checked = $(this).prop('checked');
     state.items.forEach(function(i){ i.selected = checked; });
-    renderGrid();
+    // 批量更新 DOM 状态而不是重绘
+    $('input[lay-filter="selectItem"]').prop('checked', checked);
     updateSelectedCount();
   });
 

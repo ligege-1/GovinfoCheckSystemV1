@@ -1,12 +1,12 @@
-from flask import Blueprint, render_template, request, Response, jsonify
+from flask import Blueprint, render_template, request, Response, jsonify, stream_with_context
 from flask_login import login_required, current_user
 from tools.baidu_crawler import crawl_baidu_news
 from tools.baidu_crawler import crawl_xinhua_sc_news
-from tools.baidu_crawler import deep_collect_content, collect_content_by_rule, generic_extract
+from tools.baidu_crawler import deep_collect_content, collect_content_by_rule, generic_extract, crawl_generic
 import urllib.parse
 from app import db
 from sqlalchemy.orm import joinedload
-from app.models import CollectionItem, CrawlRule, DeepCollectionContent, AiEngine
+from app.models import CollectionItem, CrawlRule, DeepCollectionContent, AiEngine, CrawlerConfig
 import json
 
 bp = Blueprint('main', __name__)
@@ -37,6 +37,120 @@ def rules_page():
 def ai_engines_page():
     return render_template('ai_engines.html', title='AI引擎管理')
 
+@bp.route('/crawlers')
+@login_required
+def crawlers_page():
+    return render_template('crawlers.html', title='爬虫管理')
+
+@bp.route('/crawler/list')
+@login_required
+def crawler_list():
+    page = request.args.get('page', default=1, type=int)
+    size = request.args.get('size', default=20, type=int)
+    keyword = request.args.get('keyword', default='', type=str)
+    
+    q = CrawlerConfig.query
+    if keyword:
+        q = q.filter(CrawlerConfig.name.like(f"%{keyword}%"))
+    
+    q = q.order_by(CrawlerConfig.created_at.desc())
+    items = q.paginate(page=page, per_page=size, error_out=False)
+    
+    data = []
+    for it in items.items:
+        data.append({
+            'id': it.id,
+            'name': it.name,
+            'base_url': it.base_url,
+            'enabled': it.enabled,
+            'description': it.description,
+            'updated_at': it.updated_at.isoformat()
+        })
+        
+    return jsonify({
+        'code': 0,
+        'msg': '',
+        'count': items.total,
+        'data': data
+    })
+
+@bp.route('/crawler/get/<int:id>')
+@login_required
+def crawler_get(id):
+    c = db.session.get(CrawlerConfig, id)
+    if not c:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify({
+        'id': c.id,
+        'name': c.name,
+        'base_url': c.base_url,
+        'method': c.method,
+        'params_json': c.params_json,
+        'headers_json': c.headers_json,
+        'list_selector': c.list_selector,
+        'title_selector': c.title_selector,
+        'url_selector': c.url_selector,
+        'cover_selector': c.cover_selector,
+        'source_selector': c.source_selector,
+        'date_selector': c.date_selector,
+        'enabled': c.enabled,
+        'description': c.description
+    })
+
+@bp.route('/crawler/save', methods=['POST'])
+@login_required
+def crawler_save():
+    data = request.get_json()
+    id_ = data.get('id')
+    
+    if id_:
+        c = db.session.get(CrawlerConfig, id_)
+        if not c:
+            return jsonify({'error': 'not found'}), 404
+    else:
+        c = CrawlerConfig()
+        db.session.add(c)
+    
+    try:
+        c.name = data.get('name')
+        c.base_url = data.get('base_url')
+        c.method = data.get('method', 'GET')
+        c.params_json = data.get('params_json')
+        c.headers_json = data.get('headers_json')
+        c.list_selector = data.get('list_selector')
+        c.title_selector = data.get('title_selector')
+        c.url_selector = data.get('url_selector')
+        c.cover_selector = data.get('cover_selector')
+        c.source_selector = data.get('source_selector')
+        c.date_selector = data.get('date_selector')
+        c.enabled = data.get('enabled', True)
+        c.description = data.get('description')
+        
+        db.session.commit()
+        return jsonify({'id': c.id})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@bp.route('/crawler/delete', methods=['POST'])
+@login_required
+def crawler_delete():
+    id_ = request.get_json().get('id')
+    c = db.session.get(CrawlerConfig, id_)
+    if c:
+        db.session.delete(c)
+        db.session.commit()
+    return jsonify({'success': True})
+
+@bp.route('/crawler/list_all')
+@login_required
+def crawler_list_all():
+    # 用于下拉框
+    items = CrawlerConfig.query.filter_by(enabled=True).all()
+    data = [{'id': 'baidu', 'name': '百度 (内置)'}, {'id': 'xinhua', 'name': '新华网 (内置)'}]
+    data.extend([{'id': str(it.id), 'name': it.name} for it in items])
+    return jsonify(data)
+
 @bp.route('/collector/stream')
 @login_required
 def collector_stream():
@@ -48,20 +162,68 @@ def collector_stream():
     def sse_event(data):
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+    # Pre-fetch configuration to avoid DB access inside generator
+    crawler_config_dict = None
+    crawler_error = None
+    
+    if source not in ['baidu', 'xinhua']:
+        try:
+            crawler_id = int(source)
+            config = db.session.get(CrawlerConfig, crawler_id)
+            if config and config.enabled:
+                crawler_config_dict = {
+                    'name': config.name,
+                    'base_url': config.base_url,
+                    'method': config.method,
+                    'params_json': config.params_json,
+                    'headers_json': config.headers_json,
+                    'list_selector': config.list_selector,
+                    'title_selector': config.title_selector,
+                    'url_selector': config.url_selector,
+                    'cover_selector': config.cover_selector,
+                    'source_selector': config.source_selector
+                }
+            else:
+                crawler_error = "Invalid or disabled crawler configuration"
+        except ValueError:
+             crawler_error = "Unknown source"
+        except Exception as e:
+             crawler_error = f"Configuration error: {str(e)}"
+
     def generate():
         yield sse_event({"type": "start", "keyword": keyword, "total": max_count, "source": source})
+        
         if source == 'xinhua':
             results_gen = crawl_xinhua_sc_news(max_count=max_count)
-        else:
+        elif source == 'baidu':
             results_gen = crawl_baidu_news(keyword, max_count=max_count, max_pages=max_pages)
+        else:
+            if crawler_error:
+                yield sse_event({"type": "error", "message": crawler_error})
+                return
+            
+            if crawler_config_dict:
+                try:
+                    results_gen = crawl_generic(crawler_config_dict, keyword, max_count=max_count, max_pages=max_pages)
+                except Exception as e:
+                    yield sse_event({"type": "error", "message": f"Crawler execution error: {str(e)}"})
+                    return
+            else:
+                 # Should be covered by crawler_error, but just in case
+                 yield sse_event({"type": "error", "message": "Unknown error"})
+                 return
         
         count = 0
-        for idx, item in enumerate(results_gen, 1):
-            count = idx
-            item_update = dict(item)
-            item_update.update({"deep_collected": False})
-            yield sse_event({"type": "item", "index": idx, "total": max_count, "item": item_update})
-            yield sse_event({"type": "progress", "current": idx, "total": max_count})
+        try:
+            for idx, item in enumerate(results_gen, 1):
+                count = idx
+                item_update = dict(item)
+                item_update.update({"deep_collected": False})
+                yield sse_event({"type": "item", "index": idx, "total": max_count, "item": item_update})
+                yield sse_event({"type": "progress", "current": idx, "total": max_count})
+        except Exception as e:
+             yield sse_event({"type": "error", "message": f"Stream error: {str(e)}"})
+             return
         
         yield sse_event({"type": "complete", "total": count})
 
@@ -773,6 +935,45 @@ def ai_engines_delete():
     db.session.delete(engine)
     db.session.commit()
     return jsonify({'deleted': 1})
+
+
+# -----------------------
+# AI Data Analysis Routes
+# -----------------------
+from app.ai_analyst import AiDataAnalyst
+
+@bp.route('/ai_analysis')
+@login_required
+def ai_analysis():
+    engines = AiEngine.query.filter_by(is_active=True).all()
+    return render_template('ai_analysis.html', title='AI 数据清洗分析', engines=engines)
+
+@bp.route('/ai_analysis/chat', methods=['POST'])
+@login_required
+def ai_analysis_chat():
+    data = request.get_json() or {}
+    query = data.get('query')
+    model_id = data.get('model_id')
+    
+    if not query:
+        return jsonify({'error': 'Query is required'}), 400
+        
+    if model_id:
+        try:
+            model_id = int(model_id)
+        except (ValueError, TypeError):
+            model_id = None
+            
+    try:
+        analyst = AiDataAnalyst(engine_id=model_id)
+    except Exception as e:
+        return jsonify({'error': f'Failed to initialize AI analyst: {str(e)}'}), 500
+    
+    headers = {
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    }
+    return Response(stream_with_context(analyst.run_analysis(query)), mimetype='text/event-stream', headers=headers)
 
 @bp.route('/ai_engines/test_chat', methods=['POST'])
 @login_required

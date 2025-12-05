@@ -1,0 +1,544 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Markdown & Highlight.js Dependencies -->
+<script src="{{ url_for('static', filename='vendor/marked/marked.min.js') }}"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/highlight/atom-one-light.min.css') }}">
+<script src="{{ url_for('static', filename='vendor/highlight/highlight.min.js') }}"></script>
+
+<style>
+    /* Global Chat Layout */
+    .chat-layout {
+        height: calc(100vh - 110px);
+        background-color: #f0f2f5;
+        display: flex;
+        flex-direction: column;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+
+    /* Header */
+    .chat-header {
+        height: 60px;
+        background: #fff;
+        border-bottom: 1px solid #e6e6e6;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        flex-shrink: 0;
+    }
+
+    .header-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #333;
+        display: flex;
+        align-items: center;
+    }
+
+    /* Chat Area */
+    .chat-history {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+        scroll-behavior: smooth;
+    }
+
+    /* Message Bubbles */
+    .chat-message {
+        display: flex;
+        margin-bottom: 24px;
+        animation: fadeIn 0.3s ease-out;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .chat-message.user {
+        flex-direction: row-reverse;
+    }
+
+    .avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 20px;
+        color: #fff;
+        flex-shrink: 0;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+
+    .avatar.ai {
+        background: linear-gradient(135deg, #1E9FFF, #009688);
+        margin-right: 15px;
+    }
+
+    .avatar.user {
+        background: linear-gradient(135deg, #FF5722, #FFB800);
+        margin-left: 15px;
+    }
+
+    .message-content {
+        max-width: 80%;
+        padding: 15px 20px;
+        border-radius: 12px;
+        font-size: 15px;
+        line-height: 1.6;
+        position: relative;
+        word-wrap: break-word;
+    }
+
+    .assistant .message-content {
+        background: #fff;
+        color: #333;
+        border-top-left-radius: 2px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+
+    .user .message-content {
+        background: #1E9FFF;
+        color: #fff;
+        border-top-right-radius: 2px;
+        box-shadow: 0 2px 8px rgba(30, 159, 255, 0.3);
+    }
+
+    /* Markdown Styles inside Assistant Bubble */
+    .markdown-body p { margin-bottom: 10px; }
+    .markdown-body p:last-child { margin-bottom: 0; }
+    .markdown-body pre { 
+        background: #f6f8fa; 
+        padding: 10px; 
+        border-radius: 6px; 
+        overflow-x: auto; 
+        margin: 10px 0;
+    }
+    .markdown-body code { 
+        font-family: Consolas, Monaco, 'Andale Mono', monospace; 
+    }
+    .markdown-body table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 15px 0;
+        font-size: 14px;
+        border-radius: 4px;
+        overflow: hidden;
+        box-shadow: 0 0 0 1px #e6e6e6;
+    }
+    .markdown-body th, .markdown-body td {
+        padding: 8px 15px;
+        border: 1px solid #e6e6e6;
+    }
+    .markdown-body th {
+        background-color: #f2f2f2;
+        font-weight: 600;
+        text-align: left;
+    }
+    .markdown-body tr:nth-child(even) { background-color: #fafafa; }
+    .markdown-body tr:hover { background-color: #f0f0f0; }
+
+    /* Process/Thinking Chain Styles */
+    .process-chain {
+        margin: 0 0 15px 55px; /* Align with AI bubble */
+        max-width: 80%;
+    }
+
+    .process-item {
+        margin-bottom: 8px;
+        background: transparent;
+    }
+
+    .process-header {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 12px;
+        background: #fff;
+        border: 1px solid #e6e6e6;
+        border-radius: 20px;
+        font-size: 12px;
+        color: #666;
+        cursor: pointer;
+        transition: all 0.2s;
+        user-select: none;
+    }
+
+    .process-header:hover {
+        background: #f8f9fa;
+        color: #333;
+        border-color: #ccc;
+    }
+
+    .process-header i { margin-right: 6px; font-size: 14px; }
+    .process-header .status-text { margin-right: 5px; }
+    .process-header .toggle-icon { font-size: 10px; margin-left: 5px; transition: transform 0.2s; }
+    
+    .process-item.active .process-header {
+        background: #e6f7ff;
+        border-color: #91d5ff;
+        color: #1890ff;
+    }
+    .process-item.active .toggle-icon { transform: rotate(180deg); }
+
+    .process-body {
+        margin-top: 8px;
+        padding: 12px;
+        background: #282c34;
+        color: #abb2bf;
+        border-radius: 6px;
+        font-family: Consolas, monospace;
+        font-size: 12px;
+        display: none; /* Hidden by default */
+        white-space: pre-wrap;
+        max-height: 300px;
+        overflow-y: auto;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+
+    .process-item.active .process-body { display: block; animation: slideDown 0.2s; }
+
+    @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-5px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Input Area */
+    .input-area {
+        background: #fff;
+        padding: 20px;
+        border-top: 1px solid #e6e6e6;
+        position: relative;
+    }
+
+    .input-wrapper {
+        background: #f4f5f7;
+        border-radius: 12px;
+        padding: 10px 15px;
+        border: 1px solid transparent;
+        transition: all 0.3s;
+    }
+
+    .input-wrapper:focus-within {
+        background: #fff;
+        border-color: #1E9FFF;
+        box-shadow: 0 0 0 3px rgba(30, 159, 255, 0.1);
+    }
+
+    #user-input {
+        width: 100%;
+        border: none;
+        background: transparent;
+        resize: none;
+        height: 60px;
+        font-size: 14px;
+        line-height: 1.5;
+        outline: none;
+    }
+
+    .input-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 8px;
+    }
+
+    .model-selector {
+        display: flex;
+        align-items: center;
+        font-size: 12px;
+        color: #999;
+    }
+    
+    .model-selector select {
+        border: none;
+        background: transparent;
+        color: #666;
+        font-weight: 500;
+        cursor: pointer;
+        margin-left: 5px;
+        outline: none;
+    }
+
+    .send-btn {
+        background: #1E9FFF;
+        color: #fff;
+        border: none;
+        padding: 8px 20px;
+        border-radius: 20px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background 0.2s;
+        display: flex;
+        align-items: center;
+    }
+
+    .send-btn:hover { background: #168add; }
+    .send-btn i { margin-right: 5px; }
+    .send-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+</style>
+
+<div class="layui-row">
+    <div class="layui-col-md12">
+        <div class="chat-layout">
+            <!-- Header -->
+            <div class="chat-header">
+                <div class="header-title">
+                    <i class="layui-icon layui-icon-dialogue" style="color: #1E9FFF; font-size: 20px; margin-right: 10px;"></i>
+                    <span>AI 智能数据分析师</span>
+                    <span class="layui-badge-dot layui-bg-green" style="margin-left: 10px;"></span>
+                    <span style="font-size: 12px; color: #999; margin-left: 5px;">Online</span>
+                </div>
+                <div>
+                    <button class="layui-btn layui-btn-sm layui-btn-primary layui-border-blue" onclick="location.reload()" title="清空对话">
+                        <i class="layui-icon layui-icon-refresh"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Chat History -->
+            <div class="chat-history" id="chat-history">
+                <!-- Welcome Message -->
+                <div class="chat-message assistant">
+                    <div class="avatar ai"><i class="layui-icon layui-icon-robot"></i></div>
+                    <div class="message-content markdown-body">
+                        <p>你好！我是你的智能数据分析助手。</p>
+                        <p>我可以协助你进行：</p>
+                        <ul>
+                            <li>📊 <strong>数据统计与分析</strong></li>
+                            <li>🧹 <strong>数据清洗与整理</strong></li>
+                            <li>🔍 <strong>复杂 SQL 查询</strong></li>
+                        </ul>
+                        <p>请告诉我你的需求，例如："统计各来源的新闻数量" 或 "查找没有封面的文章"。</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea id="user-input" placeholder="在此输入您的分析需求... (Enter 发送, Shift+Enter 换行)"></textarea>
+                </div>
+                <div class="input-toolbar">
+                    <div class="model-selector">
+                        <i class="layui-icon layui-icon-engine"></i>
+                        <select id="model-select">
+                            {% for engine in engines %}
+                            <option value="{{ engine.id }}">{{ engine.model_name }} ({{ engine.provider }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button class="send-btn" id="send-btn">
+                        <i class="layui-icon layui-icon-release"></i> 发送
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+layui.use(['layer', 'jquery'], function(){
+    var layer = layui.layer;
+    var $ = layui.$;
+
+    // Initialize Highlight.js
+    hljs.highlightAll();
+
+    // Scroll to bottom
+    function scrollToBottom() {
+        var history = $('#chat-history');
+        history.scrollTop(history[0].scrollHeight);
+    }
+
+    // Render Markdown
+    function renderMarkdown(text) {
+        var html = marked.parse(text);
+        return html;
+    }
+
+    // Create Message Bubble
+    function createMessage(role, content, id) {
+        var isAi = role === 'assistant';
+        var avatarClass = isAi ? 'ai' : 'user';
+        var iconClass = isAi ? 'layui-icon-robot' : 'layui-icon-user';
+        
+        var html = `
+            <div class="chat-message ${role}" id="${id}">
+                <div class="avatar ${avatarClass}"><i class="layui-icon ${iconClass}"></i></div>
+                <div class="message-content markdown-body">${isAi ? renderMarkdown(content) : content}</div>
+            </div>
+        `;
+        $('#chat-history').append(html);
+        scrollToBottom();
+        
+        // Highlight code blocks in the new message
+        $('#' + id + ' pre code').each(function(i, block) {
+            hljs.highlightElement(block);
+        });
+    }
+
+    // Create Process Item (Thought/SQL/Result)
+    function createProcessItem(type, content) {
+        var icon, title;
+        switch(type) {
+            case 'thought': icon = 'layui-icon-tips'; title = '思考过程'; break;
+            case 'sql': icon = 'layui-icon-code-circle'; title = '生成 SQL'; break;
+            case 'result': icon = 'layui-icon-table'; title = '执行结果'; break;
+            case 'error': icon = 'layui-icon-close-fill'; title = '发生错误'; break;
+            default: icon = 'layui-icon-engine'; title = '处理中';
+        }
+
+        var html = `
+            <div class="process-item">
+                <div class="process-header">
+                    <i class="layui-icon ${icon}"></i>
+                    <span class="status-text">${title}</span>
+                    <i class="layui-icon layui-icon-down toggle-icon"></i>
+                </div>
+                <div class="process-body">${escapeHtml(content)}</div>
+            </div>
+        `;
+        return html;
+    }
+
+    // Main Stream Processing
+    function processStream(query) {
+        var msgId = 'msg-' + Date.now();
+        var processContainerId = 'process-' + Date.now();
+        
+        // 1. Add User Message
+        createMessage('user', escapeHtml(query), 'user-' + Date.now());
+
+        // 2. Add Process Container (Hidden initially, populated by events)
+        var processHtml = `<div class="process-chain" id="${processContainerId}"></div>`;
+        $('#chat-history').append(processHtml);
+
+        // 3. Add AI Placeholder
+        var aiMsgId = 'ai-' + Date.now();
+        var aiHtml = `
+            <div class="chat-message assistant" id="${aiMsgId}">
+                <div class="avatar ai"><i class="layui-icon layui-icon-robot"></i></div>
+                <div class="message-content markdown-body"><span class="typing-cursor">Thinking...</span></div>
+            </div>
+        `;
+        $('#chat-history').append(aiHtml);
+        scrollToBottom();
+
+        var $processContainer = $('#' + processContainerId);
+        var $aiMessage = $('#' + aiMsgId);
+        var $aiContent = $aiMessage.find('.message-content');
+        var finalAnswer = "";
+        var hasStarted = false;
+
+        $('#send-btn').prop('disabled', true);
+
+        var modelId = $('#model-select').val();
+
+        fetch('/ai_analysis/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({query: query, model_id: modelId})
+        }).then(async response => {
+            if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
+            
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            function read() {
+                reader.read().then(({done, value}) => {
+                    if (done) {
+                        $('#send-btn').prop('disabled', false);
+                        return;
+                    }
+                    
+                    buffer += decoder.decode(value, {stream: true});
+                    var lines = buffer.split('\n\n');
+                    buffer = lines.pop(); 
+                    
+                    lines.forEach(line => {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                var data = JSON.parse(line.slice(6));
+                                handleEvent(data);
+                            } catch (e) { console.error(e); }
+                        }
+                    });
+                    scrollToBottom();
+                    read();
+                });
+            }
+            read();
+        }).catch(err => {
+            $processContainer.append(createProcessItem('error', err.message));
+            $('#send-btn').prop('disabled', false);
+        });
+
+        function handleEvent(data) {
+            if (data.type === 'start') return;
+            
+            if (['thought', 'sql', 'result', 'error'].includes(data.type)) {
+                // Append to process chain
+                $processContainer.append(createProcessItem(data.type, data.content));
+                
+                // Bind click toggle for new item
+                $processContainer.find('.process-header').last().on('click', function() {
+                    $(this).parent().toggleClass('active');
+                });
+                
+                // Auto-expand errors
+                if (data.type === 'error') {
+                    $processContainer.find('.process-item').last().addClass('active');
+                }
+            } 
+            else if (data.type === 'answer') {
+                // Show AI message bubble
+                if (!hasStarted) {
+                    $aiMessage.show();
+                    hasStarted = true;
+                }
+                finalAnswer = data.content;
+                $aiContent.html(renderMarkdown(finalAnswer));
+                
+                // Re-highlight
+                $aiContent.find('pre code').each(function(i, block) {
+                    hljs.highlightElement(block);
+                });
+            }
+        }
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        return text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    // Event Listeners
+    $('#send-btn').click(function(){
+        var input = $('#user-input');
+        var query = input.val().trim();
+        if (!query) return;
+        input.val('');
+        processStream(query);
+    });
+
+    $('#user-input').keypress(function(e){
+        if(e.which == 13 && !e.shiftKey){
+            e.preventDefault();
+            $('#send-btn').click();
+        }
+    });
+});
+</script>
+{% endblock %}

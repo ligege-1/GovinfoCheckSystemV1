@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layui-card">
+  <div class="layui-card-header">爬虫管理</div>
+  <div class="layui-card-body">
+    <div style="margin-bottom: 10px;">
+      <button class="layui-btn" id="add-btn">新增爬虫</button>
+    </div>
+    <table class="layui-table" id="crawler-table" lay-filter="crawler-table"></table>
+  </div>
+</div>
+
+<script type="text/html" id="crawler-toolbar">
+  <a class="layui-btn layui-btn-xs" lay-event="edit">编辑</a>
+  <a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="del">删除</a>
+</script>
+
+<script type="text/html" id="crawler-form-tpl">
+  <form class="layui-form" id="crawler-form" lay-filter="crawler-form" style="padding: 20px;">
+    <input type="hidden" name="id">
+    <div class="layui-form-item">
+      <label class="layui-form-label">名称</label>
+      <div class="layui-input-block">
+        <input type="text" name="name" required lay-verify="required" placeholder="请输入爬虫名称" autocomplete="off" class="layui-input">
+      </div>
+    </div>
+    <div class="layui-form-item">
+      <label class="layui-form-label">基础URL</label>
+      <div class="layui-input-block">
+        <input type="text" name="base_url" required lay-verify="required" placeholder="例如: https://www.example.com/search" autocomplete="off" class="layui-input">
+      </div>
+    </div>
+    <div class="layui-form-item">
+      <label class="layui-form-label">请求方法</label>
+      <div class="layui-input-block">
+        <select name="method">
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+        </select>
+      </div>
+    </div>
+    
+    <fieldset class="layui-elem-field layui-field-title">
+      <legend>参数配置 (JSON)</legend>
+    </fieldset>
+    
+    <div class="layui-form-item">
+      <label class="layui-form-label">URL参数</label>
+      <div class="layui-input-block">
+        <textarea name="params_json" placeholder='例如: {"q": "{keyword}", "page": "{page}"}' class="layui-textarea"></textarea>
+        <div class="layui-form-mid layui-word-aux">可用变量: {keyword}, {page}</div>
+      </div>
+    </div>
+    <div class="layui-form-item">
+      <label class="layui-form-label">Headers</label>
+      <div class="layui-input-block">
+        <textarea name="headers_json" placeholder='例如: {"User-Agent": "Mozilla/5.0..."}' class="layui-textarea"></textarea>
+      </div>
+    </div>
+
+    <fieldset class="layui-elem-field layui-field-title">
+      <legend>解析规则 (CSS选择器)</legend>
+    </fieldset>
+
+    <div class="layui-form-item">
+      <label class="layui-form-label">列表容器</label>
+      <div class="layui-input-block">
+        <input type="text" name="list_selector" placeholder="例如: .news-list .item" class="layui-input">
+      </div>
+    </div>
+    <div class="layui-form-item">
+      <div class="layui-inline">
+        <label class="layui-form-label">标题</label>
+        <div class="layui-input-inline">
+          <input type="text" name="title_selector" placeholder="例如: h3 a" class="layui-input">
+        </div>
+      </div>
+      <div class="layui-inline">
+        <label class="layui-form-label">URL</label>
+        <div class="layui-input-inline">
+          <input type="text" name="url_selector" placeholder="例如: h3 a (href)" class="layui-input">
+        </div>
+      </div>
+    </div>
+    <div class="layui-form-item">
+      <div class="layui-inline">
+        <label class="layui-form-label">封面</label>
+        <div class="layui-input-inline">
+          <input type="text" name="cover_selector" placeholder="例如: .img-wrap img" class="layui-input">
+        </div>
+      </div>
+      <div class="layui-inline">
+        <label class="layui-form-label">来源</label>
+        <div class="layui-input-inline">
+          <input type="text" name="source_selector" placeholder="例如: .source" class="layui-input">
+        </div>
+      </div>
+    </div>
+    
+    <div class="layui-form-item">
+      <label class="layui-form-label">状态</label>
+      <div class="layui-input-block">
+        <input type="checkbox" name="enabled" lay-skin="switch" lay-text="启用|禁用" checked value="1">
+      </div>
+    </div>
+    <div class="layui-form-item">
+      <label class="layui-form-label">描述</label>
+      <div class="layui-input-block">
+        <textarea name="description" placeholder="备注信息" class="layui-textarea"></textarea>
+      </div>
+    </div>
+    
+    <div class="layui-form-item" style="text-align: center;">
+      <button class="layui-btn" lay-submit lay-filter="save-crawler">保存</button>
+    </div>
+  </form>
+</script>
+
+<script>
+layui.use(['table', 'layer', 'form'], function(){
+  var table = layui.table;
+  var layer = layui.layer;
+  var form = layui.form;
+  var $ = layui.$;
+
+  table.render({
+    elem: '#crawler-table',
+    url: '/crawler/list',
+    cols: [[
+      {field: 'id', title: 'ID', width: 60},
+      {field: 'name', title: '名称', width: 150},
+      {field: 'base_url', title: '基础URL'},
+      {field: 'enabled', title: '状态', width: 80, templet: function(d){
+        return d.enabled ? '<span class="layui-badge layui-bg-green">启用</span>' : '<span class="layui-badge layui-bg-gray">禁用</span>';
+      }},
+      {field: 'updated_at', title: '更新时间', width: 160},
+      {fixed: 'right', title: '操作', toolbar: '#crawler-toolbar', width: 120}
+    ]],
+    page: true
+  });
+
+  $('#add-btn').on('click', function(){
+    openForm();
+  });
+
+  table.on('tool(crawler-table)', function(obj){
+    if(obj.event === 'del'){
+      layer.confirm('确认删除该爬虫配置？', function(index){
+        $.ajax({
+          url: '/crawler/delete',
+          method: 'POST',
+          contentType: 'application/json',
+          data: JSON.stringify({id: obj.data.id})
+        }).done(function(){
+          obj.del();
+          layer.close(index);
+        });
+      });
+    } else if(obj.event === 'edit'){
+      $.get('/crawler/get/' + obj.data.id, function(res){
+        openForm(res);
+      });
+    }
+  });
+
+  function openForm(data){
+    layer.open({
+      type: 1,
+      title: data ? '编辑爬虫' : '新增爬虫',
+      area: ['700px', '650px'],
+      content: $('#crawler-form-tpl').html(),
+      success: function(layero, index){
+        form.render();
+        if(data){
+          form.val('crawler-form', {
+            "id": data.id,
+            "name": data.name,
+            "base_url": data.base_url,
+            "method": data.method,
+            "params_json": data.params_json,
+            "headers_json": data.headers_json,
+            "list_selector": data.list_selector,
+            "title_selector": data.title_selector,
+            "url_selector": data.url_selector,
+            "cover_selector": data.cover_selector,
+            "source_selector": data.source_selector,
+            "enabled": data.enabled,
+            "description": data.description
+          });
+        }
+        
+        form.on('submit(save-crawler)', function(d){
+          var payload = d.field;
+          payload.enabled = !!payload.enabled; // Checkbox handling
+          
+          $.ajax({
+            url: '/crawler/save',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(payload)
+          }).done(function(){
+            layer.close(index);
+            table.reload('crawler-table');
+            layer.msg('保存成功');
+          }).fail(function(xhr){
+            layer.msg('保存失败: ' + (xhr.responseJSON ? xhr.responseJSON.error : '未知错误'), {icon: 2});
+          });
+          return false;
+        });
+      }
+    });
+  }
+});
+</script>
+{% endblock %}

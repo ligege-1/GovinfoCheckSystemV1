@@ -98,6 +98,31 @@ class AiEngine(db.Model):
     def __repr__(self):
         return '<AiEngine {} - {}>'.format(self.provider, self.model_name)
 
+class CrawlerConfig(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(128), nullable=False, unique=True) # 爬虫名称
+    base_url = db.Column(db.String(512), nullable=False) # 基础URL或搜索URL模板
+    method = db.Column(db.String(10), default='GET') # 请求方法
+    params_json = db.Column(db.Text) # 请求参数模板 JSON, e.g. {"word": "{keyword}", "pn": "{page_param}"}
+    headers_json = db.Column(db.Text) # 请求头 JSON
+    
+    # 解析规则
+    list_selector = db.Column(db.String(256)) # 列表项选择器
+    title_selector = db.Column(db.String(256)) # 标题选择器
+    url_selector = db.Column(db.String(256)) # URL选择器
+    cover_selector = db.Column(db.String(256)) # 封面选择器
+    source_selector = db.Column(db.String(256)) # 来源选择器
+    date_selector = db.Column(db.String(256)) # 日期选择器
+    
+    enabled = db.Column(db.Boolean, default=True)
+    description = db.Column(db.String(512))
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return '<CrawlerConfig {}>'.format(self.name)
+
 @login.user_loader
 def load_user(id):
     return db.session.get(User, int(id))
