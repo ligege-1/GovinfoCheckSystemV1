@@ -438,12 +438,12 @@ layui.use(['layer', 'jquery'], function(){
 
         $('#send-btn').prop('disabled', true);
 
-        var modelId = $('#model-select').val();
+        var engineId = $('#model-select').val();
 
         fetch('/ai_analysis/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({query: query, model_id: modelId})
+            body: JSON.stringify({message: query, engine_id: engineId})
         }).then(async response => {
             if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
             
@@ -455,6 +455,10 @@ layui.use(['layer', 'jquery'], function(){
                 reader.read().then(({done, value}) => {
                     if (done) {
                         $('#send-btn').prop('disabled', false);
+                        // Check if we finished without an answer
+                        if ($aiContent.html().includes('typing-cursor')) {
+                             $aiContent.html('<span style="color:#ff5722"><i class="layui-icon layui-icon-wifi"></i> 连接中断或超时，请重试。</span>');
+                        }
                         return;
                     }
                     
@@ -492,9 +496,12 @@ layui.use(['layer', 'jquery'], function(){
                     $(this).parent().toggleClass('active');
                 });
                 
-                // Auto-expand errors
+                // Auto-expand errors and update main bubble
                 if (data.type === 'error') {
                     $processContainer.find('.process-item').last().addClass('active');
+                    if ($aiContent.html().includes('typing-cursor')) {
+                        $aiContent.html('<span style="color:#ff5722"><i class="layui-icon layui-icon-face-cry"></i> 分析过程中发生错误，请查看下方详情。</span>');
+                    }
                 }
             } 
             else if (data.type === 'answer') {

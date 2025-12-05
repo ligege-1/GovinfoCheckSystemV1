@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layui-fluid">
+    <div class="layui-row layui-col-space15">
+        <!-- 统计卡片 -->
+        <div class="layui-col-md3">
+            <div class="layui-card">
+                <div class="layui-card-header">总采集量</div>
+                <div class="layui-card-body">
+                    <h2 id="stat-total">0</h2>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md3">
+            <div class="layui-card">
+                <div class="layui-card-header">覆盖区域</div>
+                <div class="layui-card-body">
+                    <h2 id="stat-regions">0</h2>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md3">
+            <div class="layui-card">
+                <div class="layui-card-header">热词数量</div>
+                <div class="layui-card-body">
+                    <h2 id="stat-keywords">0</h2>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md3">
+            <div class="layui-card">
+                <div class="layui-card-header">处理速度</div>
+                <div class="layui-card-body">
+                    <h2 id="stat-speed">0</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="layui-row layui-col-space15">
+        <!-- 热力地图 -->
+        <div class="layui-col-md8">
+            <div class="layui-card">
+                <div class="layui-card-header">全国采集热力分布 (AI分析)</div>
+                <div class="layui-card-body" style="height: 600px;">
+                    <div id="heatmap-chart" style="width: 100%; height: 100%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 最新采集列表 -->
+        <div class="layui-col-md4">
+            <div class="layui-card">
+                <div class="layui-card-header">最新采集动态 (Top 20)</div>
+                <div class="layui-card-body" style="height: 600px; overflow-y: auto;">
+                    <table class="layui-table" lay-skin="line">
+                        <colgroup>
+                            <col>
+                            <col width="100">
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th>标题</th>
+                                <th>时间</th>
+                            </tr>
+                        </thead>
+                        <tbody id="latest-list">
+                            <!-- JS 填充 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ECharts & China Map -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@4.9.0/map/js/china.js"></script>
+
+<script>
+layui.use(['jquery', 'layer'], function(){
+    var $ = layui.$;
+    
+    // 1. 加载统计数据
+    function loadStats() {
+        $.get('/api/dashboard/stats', function(res) {
+            $('#stat-total').text(res.total_collected);
+            $('#stat-regions').text(res.active_regions);
+            $('#stat-keywords').text(res.hot_keywords);
+            $('#stat-speed').text(res.speed + '/min');
+        });
+    }
+
+    // 2. 加载最新列表
+    function loadLatest() {
+        $.get('/api/dashboard/latest', function(res) {
+            var html = '';
+            res.forEach(function(item) {
+                html += '<tr>';
+                html += '<td><div class="layui-elip" title="'+item.title+'">' + item.title + '</div><div style="font-size:12px;color:#999;">' + item.source + '</div></td>';
+                html += '<td>' + item.date.split(' ')[0] + '</td>';
+                html += '</tr>';
+            });
+            $('#latest-list').html(html);
+        });
+    }
+
+    // 3. 加载热力图
+    function loadHeatmap() {
+        var chart = echarts.init(document.getElementById('heatmap-chart'));
+        chart.showLoading();
+
+        $.get('/api/dashboard/heatmap', function(data) {
+            chart.hideLoading();
+            
+            // 随机颜色生成器
+            function getRandomColor() {
+                var letters = '0123456789ABCDEF';
+                var color = '#';
+                for (var i = 0; i < 6; i++) {
+                    color += letters[Math.floor(Math.random() * 16)];
+                }
+                return color;
+            }
+
+            // 为每个数据项分配随机颜色
+            var processedData = data.map(function(item) {
+                return {
+                    name: item.name,
+                    value: item.value,
+                    keywords: item.keywords,
+                    city: item.city, // 保留城市信息
+                    itemStyle: {
+                        areaColor: getRandomColor()
+                    }
+                };
+            });
+            
+            var option = {
+                tooltip: {
+                    trigger: 'item',
+                    formatter: function(params) {
+                        if (params.data) {
+                            var tip = params.name;
+                            if (params.data.city) {
+                                tip += ' (' + params.data.city + ')';
+                            }
+                            tip += '<br/>热度: ' + params.value;
+                            tip += '<br/>热词: ' + (params.data.keywords || '无');
+                            return tip;
+                        }
+                        return params.name;
+                    }
+                },
+                // 移除 visualMap 以使用随机颜色
+                // visualMap: { ... },
+                geo: {
+                    map: 'china',
+                    roam: true,
+                    label: {
+                        show: true,
+                        color: 'rgba(0,0,0,0.7)'
+                    },
+                    itemStyle: {
+                        borderColor: 'rgba(0, 0, 0, 0.2)',
+                        areaColor: '#eee' // 默认背景色
+                    },
+                    emphasis: {
+                        itemStyle: {
+                            areaColor: null,
+                            shadowBlur: 10,
+                            shadowOffsetX: 0,
+                            shadowColor: 'rgba(0, 0, 0, 0.5)'
+                        }
+                    }
+                },
+                series: [
+                    {
+                        name: '采集热度',
+                        type: 'map',
+                        geoIndex: 0,
+                        data: processedData
+                    }
+                ]
+            };
+            
+            chart.setOption(option);
+        }).fail(function() {
+            chart.hideLoading();
+            $('#heatmap-chart').html('<div style="text-align:center;padding-top:100px;">加载失败或无数据</div>');
+        });
+
+        window.addEventListener('resize', function() {
+            chart.resize();
+        });
+    }
+
+    // 初始化
+    loadStats();
+    loadLatest();
+    loadHeatmap();
+});
+</script>
+{% endblock %}

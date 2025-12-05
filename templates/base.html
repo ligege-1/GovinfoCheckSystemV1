@@ -62,6 +62,7 @@
             <dd><a href="{{ url_for('main.ai_engines_page') }}">AI引擎管理</a></dd>
             <dd><a href="{{ url_for('main.ai_analysis') }}">AI数据分析</a></dd>
             <dd><a href="{{ url_for('main.crawlers_page') }}">爬虫管理</a></dd>
+            <dd><a href="{{ url_for('main.dashboard_page') }}">数据大屏</a></dd>
             <dd><a href="javascript:;">报告管理</a></dd>
             
             {% if current_user.role.name == 'admin' %}

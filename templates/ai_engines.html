@@ -46,7 +46,7 @@ layui.use(['layer', 'form', 'element'], function(){
   var $ = layui.$;
 
   function loadEngines(){
-    $.getJSON('/ai_engines/list', function(res){
+    $.getJSON('/ai_engine/list', function(res){
       var html = '';
       if(res.items.length === 0){
         html = '<div class="layui-col-md12" style="text-align:center;color:#999;padding:50px;">暂无 AI 引擎，请点击右上角添加</div>';
@@ -137,7 +137,7 @@ layui.use(['layer', 'form', 'element'], function(){
             var loadingId = layer.msg('思考中...', {icon: 16, shade: 0.01, time: 0});
             
             $.ajax({
-                url: '/ai_engines/test_chat',
+                url: '/ai_engine/test_chat',
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({ id: id, message: msg })
@@ -172,7 +172,7 @@ layui.use(['layer', 'form', 'element'], function(){
     // For simplicity, we can reload list or store data in DOM. 
     // Let's just use the list data since we have it in memory if we want, but better to just pass data or find it.
     // Re-fetching list item locally from DOM or global var is easy.
-    $.getJSON('/ai_engines/list', function(res){
+    $.getJSON('/ai_engine/list', function(res){
       var item = res.items.find(x => x.id === id);
       if(!item) return;
       openForm(item);
@@ -182,7 +182,7 @@ layui.use(['layer', 'form', 'element'], function(){
   window.deleteEngine = function(id){
     layer.confirm('确定要删除该 AI 引擎吗？', function(index){
       $.ajax({
-        url: '/ai_engines/delete',
+        url: '/ai_engine/delete',
         method: 'POST',
         contentType: 'application/json',
         data: JSON.stringify({id: id})
@@ -334,7 +334,7 @@ layui.use(['layer', 'form', 'element'], function(){
       payload.is_active = (payload.is_active === 'on');
       if(currentEditId) payload.id = currentEditId;
 
-      var url = currentEditId ? '/ai_engines/update' : '/ai_engines/create';
+      var url = '/ai_engine/save';
       
       $.ajax({
         url: url,
@@ -354,7 +354,7 @@ layui.use(['layer', 'form', 'element'], function(){
 
   // Bind edit function to window so onclick works
   window.editEngine = function(id){
-     $.getJSON('/ai_engines/list', function(res){
+     $.getJSON('/ai_engine/list', function(res){
       var item = res.items.find(x => x.id === id);
       if(item) openFormModal(item);
     });

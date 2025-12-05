@@ -3,6 +3,8 @@ import requests
 import re
 import time
 import random
+import threading
+import queue
 from sqlalchemy import text
 from app import db
 from app.models import AiEngine
@@ -92,7 +94,7 @@ Columns:
             target_url = f"{base_url}/chat/completions"
 
         try:
-            max_retries = 5
+            max_retries = 3
             base_delay = 1
             
             for attempt in range(max_retries):
@@ -131,6 +133,57 @@ Columns:
             # Re-raise exception
             raise Exception(f"Request failed: {str(e)}")
 
+    def analyze_heatmap(self, data_samples):
+        """
+        Analyze a list of content samples to generate regional heatmap data.
+        data_samples: List of strings (content snippets)
+        """
+        if not self.engine_config:
+            raise ValueError("No active AI Engine configured.")
+            
+        if not data_samples:
+            return []
+
+        # Limit tokens by truncating samples and limiting count
+        combined_text = ""
+        for i, text in enumerate(data_samples):
+            combined_text += f"[{i+1}] {text[:200]}...\n"
+            
+        system_prompt = """You are a data analyst. Analyze the provided news snippets.
+Task: Identify Chinese provinces (e.g., 广东, 四川, 北京) and major cities (e.g., 成都, 深圳, 杭州) mentioned in the text.
+IMPORTANT:
+1. If a city is identified, you MUST also identify its corresponding Province Name for mapping purposes (unless it's a direct municipality like 北京, 上海, 天津, 重庆).
+2. Return the result strictly as a JSON list of objects.
+3. Each object should have:
+   - "name": The standardized Province Name (for ECharts map matching) or Municipality Name.
+   - "value": Frequency count.
+   - "keywords": 1-2 hot keywords associated with that region.
+   - "city": If a specific city was the main focus, include the city name, otherwise null.
+
+Format: [{"name": "广东", "value": 5, "keywords": "暴雨, 洪涝", "city": "深圳"}, ...]
+Do not output any markdown or explanations, just the JSON string.
+"""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": combined_text}
+        ]
+        
+        try:
+            response_content = self.call_ai_api(messages)
+            # Clean response
+            cleaned = response_content.strip()
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+            
+            return json.loads(cleaned)
+        except Exception as e:
+            print(f"Heatmap analysis error: {e}")
+            return []
+
     def run_analysis(self, user_query):
         """
         Generator that runs the analysis loop and yields SSE events.
@@ -150,18 +203,18 @@ Your goal is to answer the user's request or perform data cleaning operations.
 You can execute SQL queries.
 
 IMPORTANT: You must output your response in valid JSON format ONLY, with the following structure:
-{
+{{
     "thought": "Your reasoning here (explain what you are going to do)",
     "action": "execute_sql",
     "sql": "THE SQL QUERY HERE"
-}
+}}
 
 If you have the final answer or no further SQL is needed, use:
-{
+{{
     "thought": "Final answer reasoning",
     "action": "final_answer",
     "content": "Your final answer to the user (can be in markdown). IMPORTANT: When presenting data rows, ALWAYS use Markdown tables."
-}
+}}
 
 Do not output markdown blocks (```json) around the JSON. Just the raw JSON string. Do not include any text outside the JSON.
 """
@@ -176,14 +229,73 @@ Do not output markdown blocks (```json) around the JSON. Just the raw JSON strin
 
         for i in range(max_turns):
             print(f"DEBUG: Turn {i}", flush=True)
-            # Call AI
+            
+            # Notify frontend about progress
+            yield f"data: {json.dumps({'type': 'thought', 'content': f'正在思考 (第 {i+1} 轮)...'}, ensure_ascii=False)}\n\n"
+
+            def threaded_api_call(url, payload, headers, result_q):
+                try:
+                    # Increase timeout to 300s (5 mins) for slow reasoning models
+                    response = requests.post(url, json=payload, headers=headers, timeout=300)
+                    if response.status_code == 200:
+                        data = response.json()
+                        content = data['choices'][0]['message']['content']
+                        result_q.put({"status": "success", "content": content})
+                    else:
+                        result_q.put({"status": "error", "error": f"API Error: {response.status_code} - {response.text}"})
+                except Exception as e:
+                    result_q.put({"status": "error", "error": str(e)})
+
+            # Extract config values to avoid thread-safety issues with SQLAlchemy objects
+            api_key = self.engine_config.api_key
+            api_url = self.engine_config.api_url
+            model_name = self.engine_config.model_name
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+            
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": 0.1
+            }
+            
+            # Handle URL construction logic
+            base_url = api_url.rstrip('/')
+            if not base_url.endswith('/v1'):
+                if 'siliconflow' in base_url or 'openai' in base_url:
+                    target_url = f"{base_url}/v1/chat/completions"
+                else:
+                    target_url = f"{base_url}/chat/completions"
+            else:
+                target_url = f"{base_url}/chat/completions"
+
+            # Use threading to allow heartbeat pings
+            q = queue.Queue()
+            t = threading.Thread(target=threaded_api_call, args=(target_url, payload, headers, q))
+            t.start()
+            
+            # Wait for result while sending heartbeats
+            while t.is_alive():
+                t.join(timeout=2.0) # Wait 2 seconds
+                # Send a ping/keep-alive event (ignored by frontend logic but keeps connection open)
+                # Using 'thought' with hidden content or just a special type if supported
+                # Since frontend ignores unknown types, we can send 'ping'
+                yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                
+            # Retrieve result
             try:
-                ai_response = self.call_ai_api(messages)
-                print(f"DEBUG: AI Response (raw): {ai_response}", flush=True)
-            except Exception as e:
-                print(f"DEBUG: AI API Error: {e}", flush=True)
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
-                return
+                result = q.get_nowait()
+            except queue.Empty:
+                raise Exception("Thread finished but no result in queue")
+                
+            if result['status'] == 'error':
+                raise Exception(result['error'])
+                
+            ai_response = result['content']
+
 
             # Parse Response
             try:
@@ -200,37 +312,48 @@ Do not output markdown blocks (```json) around the JSON. Just the raw JSON strin
                 else:
                     # 2. Fallback to direct parse
                     action_data = json.loads(cleaned_content)
-            except json.JSONDecodeError:
-                # If JSON parse fails, maybe it's a raw message (error or chat)
+                
+                if not isinstance(action_data, dict):
+                    raise ValueError(f"AI returned {type(action_data)}, expected dict")
+                    
+            except (json.JSONDecodeError, ValueError) as e:
+                # If JSON parse fails or not a dict
                 yield f"data: {json.dumps({'type': 'thought', 'content': f'Raw AI Response: {ai_response}'}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'error', 'content': 'Failed to parse AI response as JSON.'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'content': f'Failed to parse AI response: {str(e)}'}, ensure_ascii=False)}\n\n"
                 return
 
-            # Emit thought
-            thought = action_data.get('thought', '')
-            if thought:
-                yield f"data: {json.dumps({'type': 'thought', 'content': thought}, ensure_ascii=False)}\n\n"
+            try:
+                # Emit thought
+                thought = action_data.get('thought', '')
+                if thought:
+                    yield f"data: {json.dumps({'type': 'thought', 'content': thought}, ensure_ascii=False)}\n\n"
 
-            action = action_data.get('action')
-            
-            if action == 'execute_sql':
-                sql = action_data.get('sql')
-                yield f"data: {json.dumps({'type': 'sql', 'content': sql}, ensure_ascii=False)}\n\n"
+                action = action_data.get('action')
                 
-                # Execute SQL
-                tool_result = self.execute_sql(sql)
-                yield f"data: {json.dumps({'type': 'result', 'content': tool_result}, ensure_ascii=False)}\n\n"
-                
-                # Update history
-                messages.append({"role": "assistant", "content": cleaned_content})
-                messages.append({"role": "user", "content": f"Tool Execution Result: {tool_result}"})
-                
-            elif action == 'final_answer':
-                content = action_data.get('content')
-                yield f"data: {json.dumps({'type': 'answer', 'content': content}, ensure_ascii=False)}\n\n"
-                break
-            else:
-                yield f"data: {json.dumps({'type': 'error', 'content': f'Unknown action: {action}'}, ensure_ascii=False)}\n\n"
-                break
+                if action == 'execute_sql':
+                    sql = action_data.get('sql')
+                    yield f"data: {json.dumps({'type': 'sql', 'content': sql}, ensure_ascii=False)}\n\n"
+                    
+                    # Execute SQL
+                    tool_result = self.execute_sql(sql)
+                    yield f"data: {json.dumps({'type': 'result', 'content': tool_result}, ensure_ascii=False)}\n\n"
+                    
+                    # Update history
+                    messages.append({"role": "assistant", "content": cleaned_content})
+                    messages.append({"role": "user", "content": f"Tool Execution Result: {tool_result}"})
+                    
+                elif action == 'final_answer':
+                    content = action_data.get('content')
+                    yield f"data: {json.dumps({'type': 'answer', 'content': content}, ensure_ascii=False)}\n\n"
+                    return # End successfully
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'Unknown action: {action}'}, ensure_ascii=False)}\n\n"
+                    break
+            except Exception as e:
+                 print(f"DEBUG: Processing Error: {e}", flush=True)
+                 yield f"data: {json.dumps({'type': 'error', 'content': f'Processing Error: {str(e)}'}, ensure_ascii=False)}\n\n"
+                 return
         
+        # If loop finishes without final answer
+        yield f"data: {json.dumps({'type': 'answer', 'content': '**分析结束：** 达到最大对话轮数，未能得出最终结论。'}, ensure_ascii=False)}\n\n"
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"

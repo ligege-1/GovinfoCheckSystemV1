@@ -25,9 +25,9 @@
 
     <table class="layui-table" id="warehouse-table">
       <thead>
-        <tr>
-          <th style="width: 40px;"><input type="checkbox" id="check-all"></th>
-          <th>ID</th>
+            <tr>
+              <th style="width: 40px;"><input type="checkbox" id="check-all" lay-filter="check-all"></th>
+              <th>ID</th>
           <th>标题</th>
           <th>来源</th>
           <th>封面</th>
@@ -47,10 +47,11 @@
 </div>
 
 <script>
-layui.use(['layer','element','laypage'], function(){
+layui.use(['layer','element','laypage','form'], function(){
   var layer = layui.layer;
   var element = layui.element;
   var laypage = layui.laypage;
+  var form = layui.form;
   var $ = layui.$;
 
   var state = { page: 1, size: 20, keyword: '' };
@@ -82,7 +83,7 @@ layui.use(['layer','element','laypage'], function(){
         }
         
         rows += '<tr '+ rowStyle +'>' +
-          '<td><input type="checkbox" class="wh-check" value="'+ it.id +'"></td>' +
+          '<td><input type="checkbox" class="wh-check" value="'+ it.id +'" data-deep="'+ (it.deep_collected ? 'true' : 'false') +'"></td>' +
           '<td>'+ it.id +'</td>' +
           '<td>'+ (it.title||'') +'</td>' +
           '<td '+ sourceClass +'>'+ sourceDisplay +'</td>' +
@@ -91,9 +92,11 @@ layui.use(['layer','element','laypage'], function(){
           '<td>'+ (it.deep_collected ? '<span class="layui-badge layui-bg-green">是</span>' : '<span class="layui-badge layui-bg-gray">否</span>') +'</td>' +
           '<td>'+ (it.created_at||'') +'</td>' +
           '<td>' +
-            '<button class="layui-btn layui-btn-xs" data-action="edit" data-id="'+ it.id +'">编辑</button>' +
-            '<button class="layui-btn layui-btn-normal layui-btn-xs" data-action="preview" data-id="'+ it.id +'" style="margin-left:6px;">预览</button>' +
-            '<button class="layui-btn layui-btn-danger layui-btn-xs" data-action="del" data-id="'+ it.id +'" style="margin-left:6px;">删除</button>' +
+            '<div class="layui-btn-group">' +
+              '<button class="layui-btn layui-btn-xs" data-action="edit" data-id="'+ it.id +'">编辑</button>' +
+              '<button class="layui-btn layui-btn-normal layui-btn-xs" data-action="preview" data-id="'+ it.id +'">预览</button>' +
+              '<button class="layui-btn layui-btn-danger layui-btn-xs" data-action="del" data-id="'+ it.id +'">删除</button>' +
+            '</div>' +
           '</td>' +
         '</tr>';
       });
@@ -119,9 +122,23 @@ layui.use(['layer','element','laypage'], function(){
     });
   }
 
-  $('#check-all').on('change', function(){
+  // 监听全选复选框点击事件（处理原生 checkbox）
+  $('#check-all').on('click', function(){
     var checked = $(this).prop('checked');
-    $('.wh-check').prop('checked', checked);
+    if(checked){
+      // 如果是选中，则排除已经深度采集的 (data-deep="true")
+      $('.wh-check').each(function(){
+        var isDeep = $(this).attr('data-deep') === 'true';
+        if(!isDeep){
+          $(this).prop('checked', true);
+        } else {
+          $(this).prop('checked', false);
+        }
+      });
+    } else {
+      // 如果是取消选中，则全部取消
+      $('.wh-check').prop('checked', false);
+    }
   });
 
   $('#auto-assoc-btn').on('click', function(){
@@ -296,7 +313,12 @@ layui.use(['layer','element','laypage'], function(){
     var item = warehouseItems[id];
     if(!item){ layer.msg('数据未找到'); return; }
     
-    var content = item.deep_content || '<div style="color:#ccc;text-align:center;padding:20px;">暂无内容</div>';
+    var content = item.deep_content || '';
+    if(!content && item.deep_collected){
+        content = '<div style="color:#f60;text-align:center;padding:20px;">已标记为深度采集，但内容为空。<br>可能是采集失败或源站内容受限。</div>';
+    } else if(!content){
+        content = '<div style="color:#ccc;text-align:center;padding:20px;">暂无内容</div>';
+    }
     
     var html = '<div style="height:100%;display:flex;flex-direction:column;">' +
       '<div style="flex:1;overflow-y:auto;padding:20px;background:#fff;" id="preview-container">' + content + '</div>' +
@@ -334,8 +356,9 @@ layui.use(['layer','element','laypage'], function(){
        }).done(function(){
          layer.closeAll('loading');
          layer.msg('内容已更新');
-         // Update local cache
+         // Update local cache and reload
          if(warehouseItems[id]){ warehouseItems[id].deep_content = newContent; }
+         loadData();
        }).fail(function(){
          layer.closeAll('loading');
          layer.msg('保存失败', {icon:2});

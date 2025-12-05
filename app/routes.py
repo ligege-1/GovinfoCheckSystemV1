@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, request, Response, jsonify, stream_with_context
 from flask_login import login_required, current_user
+from datetime import datetime
 from tools.baidu_crawler import crawl_baidu_news
 from tools.baidu_crawler import crawl_xinhua_sc_news
 from tools.baidu_crawler import deep_collect_content, collect_content_by_rule, generic_extract, crawl_generic
@@ -7,7 +8,9 @@ import urllib.parse
 from app import db
 from sqlalchemy.orm import joinedload
 from app.models import CollectionItem, CrawlRule, DeepCollectionContent, AiEngine, CrawlerConfig
+from app.ai_analyst import AiDataAnalyst
 import json
+from urllib.parse import urlparse
 
 bp = Blueprint('main', __name__)
 
@@ -233,8 +236,6 @@ def collector_stream():
     }
     return Response(generate(), mimetype='text/event-stream', headers=headers)
 
-from urllib.parse import urlparse
-
 @bp.route('/warehouse/list')
 @login_required
 def warehouse_list():
@@ -250,7 +251,7 @@ def warehouse_list():
     for it in items.items:
         # Retrieve deep content from new table or fallback to old field
         deep_content_val = ""
-        if it.deep_content_obj:
+        if it.deep_content_obj and it.deep_content_obj.content:
             deep_content_val = it.deep_content_obj.content
         elif it.deep_content:
             deep_content_val = it.deep_content
@@ -296,9 +297,23 @@ def warehouse_auto_associate():
             if not it.url and not it.source:
                 continue
                 
-            rule_id = find_matching_rule(it.url, it.source, rules=rules)
-            if rule_id:
-                it.rule_id = rule_id
+            # Simple match logic
+            matched_rule_id = None
+            for r in rules:
+                # Normalize site for domain matching
+                r_site_clean = r.site.replace('http://','').replace('https://','').strip() if r.site else ""
+                
+                if r.match_type == 'domain' and it.url and r_site_clean and r_site_clean in it.url:
+                    matched_rule_id = r.id
+                    break
+                elif r.match_type == 'source' and it.source and r.site:
+                    # Bidirectional contains for source
+                    if r.site == it.source or r.site in it.source or it.source in r.site:
+                        matched_rule_id = r.id
+                        break
+            
+            if matched_rule_id:
+                it.rule_id = matched_rule_id
                 count += 1
         
         if count > 0:
@@ -355,22 +370,6 @@ def warehouse_batch_delete():
     if not ids:
         return jsonify({'deleted': 0})
     try:
-        # Using synchronize_session=False for bulk delete might require session expiry if objects are loaded,
-        # but here we just want to delete.
-        # Note: cascade delete should work if defined in models, but bulk delete with query.delete() might bypass SQLAlchemy cascades 
-        # if not configured to fetch.
-        # However, our model definition has:
-        # deep_content_obj = db.relationship(..., cascade="all, delete-orphan")
-        # Standard query.delete() emits DELETE SQL directly and might skip python-side cascades unless config is set.
-        # For safety and correctness with cascades, we should iterate if the number is small, or ensure DB-level foreign key cascades are set.
-        # In `app/models.py`, we defined foreign key, but did we set ON DELETE CASCADE in SQL?
-        # Flask-SQLAlchemy/SQLAlchemy relationship cascade is Python-side usually unless passive_deletes=True.
-        # Let's check models.py quickly to be sure about cascade behavior.
-        # If I use `delete(synchronize_session=False)`, Python cascades won't run.
-        # So deep content might be orphaned if I don't iterate.
-        # Given the user wants "batch delete", performance is good but correctness is better.
-        # Let's iterate for now to ensure deep content is also deleted via relationship cascade.
-        
         items = CollectionItem.query.filter(CollectionItem.id.in_(ids)).all()
         count = 0
         for it in items:
@@ -545,9 +544,36 @@ def rules_batch_delete():
 def collector_deep():
     data = request.get_json() or {}
     url = data.get('url')
+    source = data.get('source')
     if not url:
         return jsonify({"error": "missing url"}), 400
-    content = deep_collect_content(url)
+    
+    content = None
+    
+    # 1. Try to match a rule
+    rules = CrawlRule.query.all()
+    matched_rule = None
+    
+    for r in rules:
+        r_site_clean = r.site.replace('http://','').replace('https://','').strip() if r.site else ""
+        if r.match_type == 'domain':
+            if r_site_clean and r_site_clean in url:
+                matched_rule = r
+                break
+        elif r.match_type == 'source' and source:
+            if r.site == source or r.site in source or source in r.site:
+                matched_rule = r
+                break
+                
+    if matched_rule:
+        res = collect_content_by_rule(url, matched_rule.title_xpath, matched_rule.content_xpath, matched_rule.headers_json)
+        if res:
+            _, content = res
+            
+    # 2. Fallback to generic
+    if not content:
+        content = deep_collect_content(url)
+        
     if not content:
         return jsonify({"deep_content": "", "deep_collected": False})
     return jsonify({"deep_content": content, "deep_collected": True})
@@ -561,6 +587,83 @@ def collector_test_parse():
         return jsonify({"error": "missing url"}), 400
     res = generic_extract(url)
     return jsonify(res)
+
+@bp.route('/collector/save_one', methods=['POST'])
+@login_required
+def collector_save_one():
+    data = request.get_json() or {}
+    item_data = data.get('item')
+    keyword = data.get('keyword', '')
+    
+    if not item_data or not item_data.get('url'):
+        return jsonify({'error': 'missing data'}), 400
+        
+    url = item_data.get('url')
+    
+    # Check if exists
+    it = CollectionItem.query.filter_by(url=url).first()
+    if not it:
+        it = CollectionItem()
+        it.created_at = datetime.utcnow()
+        db.session.add(it)
+    
+    it.keyword = keyword
+    it.title = item_data.get('title')
+    it.cover = item_data.get('cover')
+    it.url = url
+    it.source = item_data.get('source')
+    it.deep_collected = item_data.get('deep_collected', False)
+    it.updated_at = datetime.utcnow()
+    
+    # Handle deep content
+    deep_content = item_data.get('deep_content')
+    if deep_content:
+        if it.deep_content_obj:
+            it.deep_content_obj.content = deep_content
+        else:
+            it.deep_content_obj = DeepCollectionContent(content=deep_content)
+            
+    db.session.commit()
+    return jsonify({'id': it.id})
+
+@bp.route('/collector/save', methods=['POST'])
+@login_required
+def collector_save():
+    data = request.get_json() or {}
+    items = data.get('items', [])
+    keyword = data.get('keyword', '')
+    
+    saved_count = 0
+    for item_data in items:
+        url = item_data.get('url')
+        if not url:
+            continue
+            
+        it = CollectionItem.query.filter_by(url=url).first()
+        if not it:
+            it = CollectionItem()
+            it.created_at = datetime.utcnow()
+            db.session.add(it)
+            
+        it.keyword = keyword
+        it.title = item_data.get('title')
+        it.cover = item_data.get('cover')
+        it.url = url
+        it.source = item_data.get('source')
+        it.deep_collected = item_data.get('deep_collected', False)
+        it.updated_at = datetime.utcnow()
+        
+        deep_content = item_data.get('deep_content')
+        if deep_content:
+            if it.deep_content_obj:
+                it.deep_content_obj.content = deep_content
+            else:
+                it.deep_content_obj = DeepCollectionContent(content=deep_content)
+                
+        saved_count += 1
+        
+    db.session.commit()
+    return jsonify({'saved': saved_count})
 
 @bp.route('/warehouse/batch_deep', methods=['POST'])
 @login_required
@@ -589,413 +692,148 @@ def warehouse_batch_deep():
             
             matched_rules = []
             
+            # Priority: 
+            # 1. Manual rule (if selected)
+            # 2. Existing associated rule (it.rule)
+            # 3. Auto-match from all rules
+            
             if manual_rule:
-                # If manual rule is specified, use it first
                 matched_rules.append(manual_rule)
+            elif it.rule:
+                matched_rules.append(it.rule)
             else:
                 # Auto match logic
-                # 1. Exact match by source name (if rule.match_type == 'source')
-                # 2. Domain match by URL (if rule.match_type == 'domain')
+                for rule in all_rules:
+                    is_match = False
+                    r_site_clean = rule.site.replace('http://','').replace('https://','').strip() if rule.site else ""
+                    
+                    if rule.match_type == 'domain':
+                        if it.url and r_site_clean and r_site_clean in it.url:
+                            is_match = True
+                    elif rule.match_type == 'source':
+                        if it.source and rule.site and (rule.site == it.source or rule.site in it.source or it.source in rule.site):
+                            is_match = True
+                    
+                    if is_match:
+                        matched_rules.append(rule)
+            
+            # Use the first matched rule or skip
+            content_text = None
+            
+            if matched_rules:
+                rule = matched_rules[0]
+                it.rule_id = rule.id
                 
-                # Find source matches
-                if it.source:
-                    source_matches = [r for r in all_rules if r.match_type == 'source' and r.site == it.source]
-                    matched_rules.extend(source_matches)
-                
-                # Find domain matches
-                domain = urllib.parse.urlparse(it.url).netloc
-                domain_matches = [r for r in all_rules if r.match_type == 'domain' and r.site and r.site in domain]
-                matched_rules.extend(domain_matches)
+                # Perform deep collection with rule
+                # unpack tuple (title, content)
+                res = collect_content_by_rule(it.url, rule.title_xpath, rule.content_xpath, rule.headers_json)
+                if res:
+                    _, content_text = res
             
-            title = ""
-            content = ""
+            # Fallback to generic deep collection if rule failed or no rule matched
+            if not content_text:
+                content_text = deep_collect_content(it.url)
             
-            # Try matched rules in order (Cascade)
-            for rule in matched_rules:
-                try:
-                    res = collect_content_by_rule(
-                        it.url, 
-                        rule.title_xpath, 
-                        rule.content_xpath, 
-                        rule.headers_json
-                    )
-                    if res and (res[0] or res[1]):
-                        title, content = res
-                        if content: # If we got content, stop trying other rules
-                            break 
-                except Exception as e:
-                    print(f"Rule {rule.id} failed for item {it.id}: {e}")
-                    continue
-
-            # Fallback if rules failed or no rule found
-            if not content:
-                # Use generic crawler
-                content = deep_collect_content(it.url)
-            
-            if title:
-                it.title = title 
-            
-            # Save only if content is valid
-            if content and len(content.strip()) > 20:
+            if content_text:
                 if it.deep_content_obj:
-                    it.deep_content_obj.content = content
+                    it.deep_content_obj.content = content_text
                 else:
-                    it.deep_content_obj = DeepCollectionContent(content=content)
+                    it.deep_content_obj = DeepCollectionContent(content=content_text)
                 it.deep_collected = True
                 processed += 1
-            else:
-                it.deep_collected = False
-            
+                
         except Exception as e:
-            print(f"Batch deep collect error for item {it.id}: {e}")
-            continue
+            print(f"Batch deep error item {it.id}: {e}")
             
     db.session.commit()
     return jsonify({'processed': processed})
 
-
-def find_matching_rule(url, source, rules=None):
-    """Find a matching CrawlRule for the given URL and source."""
-    domain = ''
-    if url:
-        try:
-            domain = urllib.parse.urlparse(url).netloc
-        except:
-            domain = ''
-        
-    if rules is None:
-        rules = CrawlRule.query.all()
-
-    for r in rules:
-        # Check based on match_type
-        if r.match_type == 'domain':
-            # Domain matching: check if r.site is in domain or domain is in r.site
-            if r.site and domain and (r.site == domain or r.site in domain or domain in r.site):
-                return r.id
-        
-        elif r.match_type == 'source':
-            # Source matching: check if r.site matches source
-            # We also check r.name as a fallback if r.site is used for something else, 
-            # though usually site holds the matching pattern.
-            if source:
-                if r.site and (r.site == source or r.site in source or source in r.site):
-                    return r.id
-                if r.name and (r.name == source or r.name in source or source in r.name):
-                    return r.id
-                    
-        else:
-            # Legacy/Default fallback (AND logic)
-            site_match = (r.site and domain and (r.site == domain or r.site in domain or domain in r.site))
-            name_match = (r.name and source and (r.name == source or r.name in source or source in r.name))
-            if site_match and name_match:
-                return r.id
-            
-    return None
-
-@bp.route('/collector/save', methods=['POST'])
+# --- AI Engines Routes ---
+@bp.route('/ai_engine/list')
 @login_required
-def collector_save():
-    payload = request.get_json() or {}
-    keyword = payload.get('keyword', '')
-    items = payload.get('items', [])
-    saved = 0
-    
-    # In-memory deduplication sets for the current batch
-    seen_urls = set()
-    seen_titles = set()
-    
-    for it in items:
-        try:
-            url = it.get('url')
-            title = it.get('title')
-            
-            # Check duplicates within the current batch
-            if url and url in seen_urls:
-                continue
-            if title and title in seen_titles:
-                continue
-            
-            # 查重：如果URL或标题已存在，则跳过
-            existing = CollectionItem.query.filter(
-                (CollectionItem.url == url) | 
-                (CollectionItem.title == title)
-            ).first()
-            
-            if existing:
-                # If exists, try to update deep content if the new item has it
-                new_deep_collected = bool(it.get('deep_collected'))
-                new_deep_content = it.get('deep_content')
-                
-                if new_deep_collected and new_deep_content and len(str(new_deep_content).strip()) >= 20:
-                     existing.deep_collected = True
-                     if existing.deep_content_obj:
-                         existing.deep_content_obj.content = new_deep_content
-                     else:
-                         existing.deep_content_obj = DeepCollectionContent(content=new_deep_content)
-                     
-                     # Also try to associate rule if missing
-                     if not existing.rule_id:
-                         existing.rule_id = find_matching_rule(existing.url, existing.source)
-                         
-                     db.session.add(existing) # Ensure it's in session
-                     saved += 1 # Count as saved/processed
-
-                if url: seen_urls.add(url)
-                if title: seen_titles.add(title)
-                continue
-
-            deep_collected = bool(it.get('deep_collected'))
-            deep_content = it.get('deep_content')
-            
-            # Validation: Ensure deep_collected is False if content is missing or too short
-            if deep_collected and (not deep_content or len(str(deep_content).strip()) < 20):
-                deep_collected = False
-                deep_content = None
-
-            ci = CollectionItem(
-                keyword=keyword,
-                title=title,
-                cover=it.get('cover'),
-                url=url,
-                source=it.get('source'),
-                deep_collected=deep_collected
-            )
-            
-            # Try to associate rule
-            ci.rule_id = find_matching_rule(url, it.get('source'))
-            
-            if deep_content:
-                ci.deep_content_obj = DeepCollectionContent(content=deep_content)
-
-            db.session.add(ci)
-            
-            if url: seen_urls.add(url)
-            if title: seen_titles.add(title)
-            
-            saved += 1
-        except Exception:
-            db.session.rollback()
-            continue
-    db.session.commit()
-    return jsonify({"saved": saved})
-
-@bp.route('/collector/save_one', methods=['POST'])
-@login_required
-def collector_save_one():
-    payload = request.get_json() or {}
-    keyword = payload.get('keyword', '')
-    item = payload.get('item') or {}
-    try:
-        # 查重
-        existing = CollectionItem.query.filter(
-            (CollectionItem.url == item.get('url')) | 
-            (CollectionItem.title == item.get('title'))
-        ).first()
-        
-        if existing:
-            # Check if we need to update deep content
-            new_deep_collected = bool(item.get('deep_collected'))
-            new_deep_content = item.get('deep_content')
-            
-            updated = False
-            if new_deep_collected and new_deep_content and len(str(new_deep_content).strip()) >= 50:
-                 existing.deep_collected = True
-                 if existing.deep_content_obj:
-                     existing.deep_content_obj.content = new_deep_content
-                 else:
-                     existing.deep_content_obj = DeepCollectionContent(content=new_deep_content)
-                 updated = True
-            
-            # Also try to associate rule if missing
-            if not existing.rule_id:
-                 rid = find_matching_rule(existing.url, existing.source)
-                 if rid:
-                     existing.rule_id = rid
-                     updated = True
-
-            if updated:
-                 db.session.commit()
-                 return jsonify({"id": existing.id, "msg": "Item updated"})
-
-            # 如果已存在且不需要更新深度内容，返回成功但不重复添加
-            # 这里为了前端兼容，返回已存在的ID
-            return jsonify({"id": existing.id, "msg": "Item already exists"})
-
-        # Validate deep content
-        deep_collected = bool(item.get('deep_collected'))
-        deep_content = item.get('deep_content')
-        
-        if deep_collected and (not deep_content or len(deep_content.strip()) < 50):
-            # If claimed deep collected but content is empty or too short, revert flag
-            deep_collected = False
-            deep_content = None
-
-        ci = CollectionItem(
-            keyword=keyword,
-            title=item.get('title'),
-            cover=item.get('cover'),
-            url=item.get('url'),
-            source=item.get('source'),
-            deep_collected=deep_collected
-        )
-        
-        # Try to associate rule
-        ci.rule_id = find_matching_rule(item.get('url'), item.get('source'))
-        
-        if deep_content:
-            ci.deep_content_obj = DeepCollectionContent(content=deep_content)
-
-        db.session.add(ci)
-        db.session.commit()
-        return jsonify({"id": ci.id})
-    except Exception:
-        db.session.rollback()
-        return jsonify({"error": "save failed"}), 500
-
-# --- AI Engine Routes ---
-
-@bp.route('/ai_engines/list')
-@login_required
-def ai_engines_list():
-    engines = AiEngine.query.order_by(AiEngine.created_at.desc()).all()
+def ai_engine_list():
+    items = AiEngine.query.all()
     data = []
-    for e in engines:
+    for it in items:
         data.append({
-            'id': e.id,
-            'provider': e.provider,
-            'api_url': e.api_url,
-            'api_key': e.api_key,
-            'model_name': e.model_name,
-            'is_active': e.is_active,
-            'created_at': e.created_at.isoformat()
+            'id': it.id,
+            'provider': it.provider,
+            'api_url': it.api_url,
+            'api_key': it.api_key,
+            'model_name': it.model_name,
+            'is_active': it.is_active,
+            'updated_at': it.updated_at.isoformat()
         })
     return jsonify({'items': data})
 
-@bp.route('/ai_engines/create', methods=['POST'])
+@bp.route('/ai_engine/save', methods=['POST'])
 @login_required
-def ai_engines_create():
-    payload = request.get_json() or {}
-    try:
-        engine = AiEngine(
-            provider=payload.get('provider'),
-            api_url=payload.get('api_url'),
-            api_key=payload.get('api_key'),
-            model_name=payload.get('model_name'),
-            is_active=payload.get('is_active', True)
-        )
+def ai_engine_save():
+    data = request.get_json()
+    id_ = data.get('id')
+    if id_:
+        engine = db.session.get(AiEngine, id_)
+        if not engine:
+            return jsonify({'error': 'not found'}), 404
+    else:
+        engine = AiEngine()
         db.session.add(engine)
-        db.session.commit()
-        return jsonify({'id': engine.id})
-    except Exception as e:
-        db.session.rollback()
-        print(f"Create AI Engine error: {e}")
-        return jsonify({'error': 'create failed'}), 500
-
-@bp.route('/ai_engines/update', methods=['POST'])
-@login_required
-def ai_engines_update():
-    payload = request.get_json() or {}
-    id_ = payload.get('id')
-    if not id_:
-        return jsonify({'error': 'missing id'}), 400
     
-    engine = db.session.get(AiEngine, int(id_))
-    if not engine:
-        return jsonify({'error': 'not found'}), 404
-        
-    if 'provider' in payload:
-        engine.provider = payload.get('provider')
-    if 'api_url' in payload:
-        engine.api_url = payload.get('api_url')
-    if 'api_key' in payload:
-        engine.api_key = payload.get('api_key')
-    if 'model_name' in payload:
-        engine.model_name = payload.get('model_name')
-    if 'is_active' in payload:
-        engine.is_active = payload.get('is_active')
-        
-    try:
-        db.session.commit()
-        return jsonify({'id': engine.id})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': 'update failed'}), 500
-
-@bp.route('/ai_engines/delete', methods=['POST'])
-@login_required
-def ai_engines_delete():
-    payload = request.get_json() or {}
-    id_ = payload.get('id')
-    if not id_:
-        return jsonify({'error': 'missing id'}), 400
-    engine = db.session.get(AiEngine, int(id_))
-    if not engine:
-        return jsonify({'error': 'not found'}), 404
+    engine.provider = data.get('provider')
+    engine.api_url = data.get('api_url')
+    engine.api_key = data.get('api_key')
+    engine.model_name = data.get('model_name')
+    engine.is_active = data.get('is_active', True)
     
-    db.session.delete(engine)
     db.session.commit()
-    return jsonify({'deleted': 1})
+    return jsonify({'id': engine.id})
 
+@bp.route('/ai_engine/delete', methods=['POST'])
+@login_required
+def ai_engine_delete():
+    data = request.get_json()
+    id_ = data.get('id')
+    engine = db.session.get(AiEngine, id_)
+    if engine:
+        db.session.delete(engine)
+        db.session.commit()
+    return jsonify({'success': True})
 
-# -----------------------
-# AI Data Analysis Routes
-# -----------------------
-from app.ai_analyst import AiDataAnalyst
-
+# --- AI Analysis Routes ---
 @bp.route('/ai_analysis')
 @login_required
 def ai_analysis():
     engines = AiEngine.query.filter_by(is_active=True).all()
-    return render_template('ai_analysis.html', title='AI 数据清洗分析', engines=engines)
+    return render_template('ai_analysis.html', title='AI数据分析', engines=engines)
 
 @bp.route('/ai_analysis/chat', methods=['POST'])
 @login_required
 def ai_analysis_chat():
-    data = request.get_json() or {}
-    query = data.get('query')
-    model_id = data.get('model_id')
+    data = request.get_json()
+    message = data.get('message')
+    engine_id = data.get('engine_id')
     
-    if not query:
-        return jsonify({'error': 'Query is required'}), 400
+    if not message:
+        return jsonify({'error': 'message required'}), 400
         
-    if model_id:
-        try:
-            model_id = int(model_id)
-        except (ValueError, TypeError):
-            model_id = None
-            
-    try:
-        analyst = AiDataAnalyst(engine_id=model_id)
-    except Exception as e:
-        return jsonify({'error': f'Failed to initialize AI analyst: {str(e)}'}), 500
+    # Use AiDataAnalyst
+    analyst = AiDataAnalyst(engine_id)
     
-    headers = {
-        'Cache-Control': 'no-cache',
-        'X-Accel-Buffering': 'no'
-    }
-    return Response(stream_with_context(analyst.run_analysis(query)), mimetype='text/event-stream', headers=headers)
+    return Response(stream_with_context(analyst.run_analysis(message)), mimetype='text/event-stream')
 
-@bp.route('/ai_engines/test_chat', methods=['POST'])
+@bp.route('/ai_engine/test_chat', methods=['POST'])
 @login_required
-def ai_engines_test_chat():
-    payload = request.get_json() or {}
-    id_ = payload.get('id')
-    message = payload.get('message')
+def ai_engine_test_chat():
+    data = request.get_json()
+    id_ = data.get('id')
+    message = data.get('message', 'Hello')
     
-    if not id_ or not message:
-        return jsonify({'error': 'missing parameters'}), 400
-        
-    engine = db.session.get(AiEngine, int(id_))
+    engine = db.session.get(AiEngine, id_)
     if not engine:
         return jsonify({'error': 'engine not found'}), 404
         
-    if not engine.is_active:
-        return jsonify({'error': 'engine is inactive'}), 400
-        
+    import openai
     try:
-        # Use openai library to call the API
-        import openai
-        
         client = openai.OpenAI(
             api_key=engine.api_key,
             base_url=engine.api_url
@@ -1018,3 +856,59 @@ def ai_engines_test_chat():
     except Exception as e:
         print(f"Chat Test Error: {e}")
         return jsonify({'error': str(e)}), 500
+
+# --- Dashboard Routes ---
+@bp.route('/dashboard')
+@login_required
+def dashboard_page():
+    return render_template('dashboard.html', title='数据大屏')
+
+@bp.route('/api/dashboard/stats')
+@login_required
+def dashboard_stats():
+    total_collected = CollectionItem.query.count()
+    # Mocking other stats for now or calculating them
+    return jsonify({
+        'total_collected': total_collected,
+        'active_regions': 34,
+        'hot_keywords': 286,
+        'speed': 1284
+    })
+
+@bp.route('/api/dashboard/latest')
+@login_required
+def dashboard_latest():
+    # Latest 20 items, sorted by created_at desc
+    items = CollectionItem.query.order_by(CollectionItem.created_at.desc()).limit(20).all()
+    data = []
+    for it in items:
+        data.append({
+            'id': it.id,
+            'title': it.title,
+            'source': it.source or 'Unknown',
+            'date': it.created_at.strftime('%Y-%m-%d %H:%M:%S') if it.created_at else ''
+        })
+    return jsonify(data)
+
+@bp.route('/api/dashboard/heatmap')
+@login_required
+def dashboard_heatmap():
+    # Analyze recent deep content for heatmap
+    try:
+        # Get latest 20 items with deep content
+        contents = DeepCollectionContent.query.order_by(DeepCollectionContent.created_at.desc()).limit(20).all()
+        
+        if not contents:
+            return jsonify([])
+            
+        samples = [c.content for c in contents if c.content and len(c.content) > 50]
+        
+        if not samples:
+            return jsonify([])
+
+        analyst = AiDataAnalyst()
+        result = analyst.analyze_heatmap(samples)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Dashboard heatmap error: {e}")
+        return jsonify([])
