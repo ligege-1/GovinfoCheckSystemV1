@@ -228,67 +228,161 @@ def collect_content_by_rule(url, title_xpath, content_xpath, headers_str, timeou
         print(f"Rule crawl error: {e}")
         return None
 
+import re
+
 def deep_collect_content(url, timeout=10):
+    """
+    深度采集指定URL的内容 (Optimized Version)
+    :param url: 目标URL
+    :return: 清洗后的正文内容
+    """
     try:
-        resp = requests.get(url, timeout=timeout, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        })
-        resp.encoding = resp.apparent_encoding or 'utf-8'
+        data = generic_extract(url, timeout=timeout)
+        return data.get('content', '')
+    except Exception:
+        return ""
+
+try:
+    from curl_cffi import requests as curl_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+
+def generic_extract(url, timeout=10):
+    """
+    通用提取器：提取标题、正文、封面、来源
+    :return: dict
+    """
+    try:
+        headers = {
+             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+             "Referer": "https://www.baidu.com/",
+             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+             "Cookie": "BAIDUID=CFAA73C2203E2E4943756281B8073CBE:FG=1;"
+        }
+        
+        host = urllib.parse.urlparse(url).netloc
+        
+        # Special handling for baijiahao using curl_cffi if available
+        if 'baijiahao.baidu.com' in host and HAS_CURL_CFFI:
+             try:
+                 print(f"DEBUG: Using curl_cffi for {url}")
+                 resp = curl_requests.get(
+                     url, 
+                     impersonate="chrome124",
+                     headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                     },
+                     timeout=timeout
+                 )
+             except Exception as e:
+                 print(f"curl_cffi failed, falling back to requests: {e}")
+                 resp = requests.get(url, timeout=timeout, headers=headers)
+        else:
+             resp = requests.get(url, timeout=timeout, headers=headers)
+        
+        # Encoding detection improvement
+        if hasattr(resp, 'apparent_encoding'):
+            encoding = resp.apparent_encoding
+            if 'charset=gb2312' in resp.text.lower() or 'charset=gbk' in resp.text.lower():
+                 encoding = 'gb18030'
+            resp.encoding = encoding or 'utf-8'
+        elif hasattr(resp, 'encoding') and hasattr(resp, 'charset'):
+             # For curl_cffi, it might not have apparent_encoding but has charset
+             if 'charset=gb2312' in resp.text.lower() or 'charset=gbk' in resp.text.lower():
+                 resp.encoding = 'gb18030'
+        
         if resp.status_code != 200:
-            return ""
+            return {}
+
         soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # 1. Clean up: remove script, style, etc.
+        # But be careful, some sites (like baijiahao) might have content in scripts (e.g. JSON) if dynamic
+        # For now, we keep script removal but maybe parse JSON if needed.
+        for tag in soup(['script', 'style', 'iframe', 'noscript', 'header', 'footer', 'nav', 'meta', 'link']):
+            tag.decompose()
+            
+        # 2. Extract Title
+        title = ""
+        h1 = soup.find('h1')
+        if h1:
+            title = h1.get_text(strip=True)
+        if not title:
+            title = soup.title.get_text(strip=True) if soup.title else ""
+            
+        # 3. Extract Content (Density based + Selectors)
+        content = ""
+        
+        # Specific domain logic (simplified)
         host = urllib.parse.urlparse(url).netloc
         candidates = []
         if 'baijiahao.baidu.com' in host:
-            candidates = ['.article-content', '.content', '#article', '.content-container', '.article', 'article']
-        elif 'news.cctv.com' in host or 'cctv.com' in host:
-            candidates = ['#textArea', '.content_area', '.text_area', '.content', 'article']
-        elif 'thepaper.cn' in host or 'www.thepaper.cn' in host:
-            candidates = ['.news_txt', '.news_content', '#news_txt', '.article', 'article']
-        elif 'xinhuanet.com' in host:
-            candidates = ['#content', '.h-news-text', '.article', '.content', 'article']
-        elif 'people.com.cn' in host or 'paper.people.com.cn' in host or 'sc.people.com.cn' in host:
-            candidates = ['#rwb_zw', '.rmrb', '.article', '.content', 'article']
+            # Baijiahao often has content in specific classes
+            candidates = [
+                '.index-module_articleWrap_2Zphx', # New class often seen
+                '.article-content', 
+                '.content', 
+                '#article', 
+                'article',
+                'div[class*="article-content"]',
+                'div[class*="index-module_article"]'
+            ]
+        elif 'mp.weixin.qq.com' in host:
+             candidates = ['#js_content', '.rich_media_content']
         else:
-            candidates = ['article', '.content', '.article', '.post', '#content', '.entry-content', '.news-content', '.text', '.detail']
-        text = ''
+            candidates = ['article', '#content', '.content', '.article', '.post', '.entry-content', '.news-content', '.main-content', '.detail-content']
+            
         for sel in candidates:
             elem = soup.select_one(sel)
-            if elem and isinstance(elem, Tag):
-                text = elem.get_text("\n", strip=True)
-                if len(text) > 100:
+            if elem:
+                content = elem.get_text("\n", strip=True)
+                if len(content) > 100:
                     break
-        if not text:
-            # Fallback: Try to find all paragraphs
-            ps = soup.find_all('p')
-            if ps:
-                # Filter out very short paragraphs (likely links/footer)
-                valid_ps = [p.get_text(strip=True) for p in ps if len(p.get_text(strip=True)) > 10]
-                if valid_ps:
-                    text = "\n".join(valid_ps)
         
-        # If text is too short, it's likely garbage
-        if len(text) < 50:
-            return ""
+        # Fallback: Density Analysis
+        if not content or len(content) < 50:
+            # Find the block element with the most text
+            max_len = 0
+            best_elem = None
+            for tag in soup.find_all(['div', 'section', 'td', 'li']):
+                # Simple heuristic: text length minus tag overhead
+                txt = tag.get_text(strip=True)
+                if len(txt) > max_len:
+                    # Check link density
+                    links = tag.find_all('a')
+                    link_text_len = sum([len(a.get_text(strip=True)) for a in links])
+                    if len(txt) > 0 and (link_text_len / len(txt)) < 0.5: # Less than 50% link text
+                        max_len = len(txt)
+                        best_elem = tag
+            
+            if best_elem:
+                content = best_elem.get_text("\n", strip=True)
 
+        # 4. Clean content
+        # Remove common noise
+        lines = [line.strip() for line in content.split('\n') if line.strip()]
+        content = "\n".join(lines)
+        
         # Invalid content keywords filter
         invalid_keywords = [
-            "403 Forbidden", "404 Not Found", "访问受限", "安全验证", "验证码", 
+            "403 Forbidden", "404 Not Found", "访问受限", "验证码", 
             "JavaScript is required", "Please turn on JavaScript",
-            "Browser not supported", "浏览器版本过低", "非常抱歉，您无法访问",
-            "系统检测到您的请求异常", "您的IP地址", "Access Denied"
+            "Browser not supported", "浏览器版本过低"
         ]
-        
-        # Check if text contains predominantly invalid keywords or is just navigation
-        # Simple check: if any critical error message is in the first 500 chars
-        first_part = text[:500]
-        for kw in invalid_keywords:
-            if kw in first_part:
-                return ""
+        if any(kw in content[:200] for kw in invalid_keywords):
+            content = ""
 
-        return text[:4000]
-    except Exception:
-        return ""
+        return {
+            "title": title,
+            "content": content[:5000], # Limit length
+            "url": url
+        }
+    except Exception as e:
+        print(f"Generic extract error: {e}")
+        return {}
+
 
 def crawl_xinhua_sc_news(max_count=20):
     """

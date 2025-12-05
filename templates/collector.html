@@ -35,6 +35,7 @@
         </div>
         <div class="layui-inline">
           <button class="layui-btn" lay-submit lay-filter="startCollect">开始采集</button>
+          <button class="layui-btn layui-btn-normal" type="button" id="test-parse-btn" style="margin-left: 10px;">测试解析</button>
         </div>
       </div>
     </form>
@@ -241,6 +242,33 @@ layui.use(['form','layer','element'], function(){
     }).fail(function(){
       layer.closeAll('loading');
       layer.msg('保存失败', {icon:2});
+    });
+  });
+
+  $('#test-parse-btn').click(function(){
+    layer.prompt({title: '输入要测试的URL', formType: 0}, function(url, index){
+        layer.close(index);
+        if(!url) return;
+        layer.load(1);
+        $.ajax({
+            url: '/collector/test_parse',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({url: url})
+        }).done(function(res){
+            layer.closeAll('loading');
+            var content = res.content || '未提取到内容';
+            var title = res.title || '未提取到标题';
+            layer.open({
+                type: 1,
+                title: '解析结果',
+                area: ['800px', '600px'],
+                content: '<div style="padding:20px;"><h3>'+title+'</h3><hr><pre style="white-space:pre-wrap;">'+content+'</pre></div>'
+            });
+        }).fail(function(){
+            layer.closeAll('loading');
+            layer.msg('解析请求失败');
+        });
     });
   });
 });

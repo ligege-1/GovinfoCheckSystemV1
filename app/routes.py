@@ -2,9 +2,10 @@ from flask import Blueprint, render_template, request, Response, jsonify
 from flask_login import login_required, current_user
 from tools.baidu_crawler import crawl_baidu_news
 from tools.baidu_crawler import crawl_xinhua_sc_news
-from tools.baidu_crawler import deep_collect_content, collect_content_by_rule
+from tools.baidu_crawler import deep_collect_content, collect_content_by_rule, generic_extract
 import urllib.parse
 from app import db
+from sqlalchemy.orm import joinedload
 from app.models import CollectionItem, CrawlRule, DeepCollectionContent, AiEngine
 import json
 
@@ -78,7 +79,7 @@ def warehouse_list():
     page = request.args.get('page', default=1, type=int)
     size = request.args.get('size', default=20, type=int)
     keyword = request.args.get('keyword', default='', type=str)
-    q = CollectionItem.query
+    q = CollectionItem.query.options(joinedload(CollectionItem.rule), joinedload(CollectionItem.deep_content_obj))
     if keyword:
         q = q.filter(CollectionItem.title.like(f"%{keyword}%"))
     q = q.order_by(CollectionItem.created_at.desc())
@@ -108,6 +109,7 @@ def warehouse_list():
             'source': it.source,
             'domain': domain,
             'rule_id': it.rule_id,
+            'rule_name': it.rule.name if it.rule else None,
             'deep_collected': it.deep_collected,
             'deep_content': deep_content_val,
             'created_at': it.created_at.isoformat()
@@ -128,27 +130,14 @@ def warehouse_auto_associate():
         count = 0
         
         for it in items:
-            if not it.url or not it.source:
+            # We need at least URL or Source to match
+            if not it.url and not it.source:
                 continue
                 
-            domain = ''
-            try:
-                domain = urlparse(it.url).netloc
-            except:
-                continue
-                
-            # Logic: Domain + Source Name matches Rule(Domain + Name)
-            # We assume Rule.site stores the domain or identifier, and Rule.name stores the name
-            for r in rules:
-                # Check if rule site matches domain (or part of it) AND rule name matches source
-                # Using looser matching for robustness
-                site_match = (r.site and (r.site == domain or r.site in domain or domain in r.site))
-                name_match = (r.name and (r.name == it.source or r.name in it.source or it.source in r.name))
-                
-                if site_match and name_match:
-                    it.rule_id = r.id
-                    count += 1
-                    break
+            rule_id = find_matching_rule(it.url, it.source, rules=rules)
+            if rule_id:
+                it.rule_id = rule_id
+                count += 1
         
         if count > 0:
             db.session.commit()
@@ -401,6 +390,16 @@ def collector_deep():
         return jsonify({"deep_content": "", "deep_collected": False})
     return jsonify({"deep_content": content, "deep_collected": True})
 
+@bp.route('/collector/test_parse', methods=['POST'])
+@login_required
+def collector_test_parse():
+    data = request.get_json() or {}
+    url = data.get('url')
+    if not url:
+        return jsonify({"error": "missing url"}), 400
+    res = generic_extract(url)
+    return jsonify(res)
+
 @bp.route('/warehouse/batch_deep', methods=['POST'])
 @login_required
 def warehouse_batch_deep():
@@ -474,14 +473,16 @@ def warehouse_batch_deep():
             if title:
                 it.title = title 
             
-            # Save
-            if it.deep_content_obj:
-                it.deep_content_obj.content = content
+            # Save only if content is valid
+            if content and len(content.strip()) > 20:
+                if it.deep_content_obj:
+                    it.deep_content_obj.content = content
+                else:
+                    it.deep_content_obj = DeepCollectionContent(content=content)
+                it.deep_collected = True
+                processed += 1
             else:
-                it.deep_content_obj = DeepCollectionContent(content=content)
-
-            it.deep_collected = True
-            processed += 1
+                it.deep_collected = False
             
         except Exception as e:
             print(f"Batch deep collect error for item {it.id}: {e}")
@@ -490,6 +491,45 @@ def warehouse_batch_deep():
     db.session.commit()
     return jsonify({'processed': processed})
 
+
+def find_matching_rule(url, source, rules=None):
+    """Find a matching CrawlRule for the given URL and source."""
+    domain = ''
+    if url:
+        try:
+            domain = urllib.parse.urlparse(url).netloc
+        except:
+            domain = ''
+        
+    if rules is None:
+        rules = CrawlRule.query.all()
+
+    for r in rules:
+        # Check based on match_type
+        if r.match_type == 'domain':
+            # Domain matching: check if r.site is in domain or domain is in r.site
+            if r.site and domain and (r.site == domain or r.site in domain or domain in r.site):
+                return r.id
+        
+        elif r.match_type == 'source':
+            # Source matching: check if r.site matches source
+            # We also check r.name as a fallback if r.site is used for something else, 
+            # though usually site holds the matching pattern.
+            if source:
+                if r.site and (r.site == source or r.site in source or source in r.site):
+                    return r.id
+                if r.name and (r.name == source or r.name in source or source in r.name):
+                    return r.id
+                    
+        else:
+            # Legacy/Default fallback (AND logic)
+            site_match = (r.site and domain and (r.site == domain or r.site in domain or domain in r.site))
+            name_match = (r.name and source and (r.name == source or r.name in source or source in r.name))
+            if site_match and name_match:
+                return r.id
+            
+    return None
+
 @bp.route('/collector/save', methods=['POST'])
 @login_required
 def collector_save():
@@ -497,29 +537,79 @@ def collector_save():
     keyword = payload.get('keyword', '')
     items = payload.get('items', [])
     saved = 0
+    
+    # In-memory deduplication sets for the current batch
+    seen_urls = set()
+    seen_titles = set()
+    
     for it in items:
         try:
+            url = it.get('url')
+            title = it.get('title')
+            
+            # Check duplicates within the current batch
+            if url and url in seen_urls:
+                continue
+            if title and title in seen_titles:
+                continue
+            
             # 查重：如果URL或标题已存在，则跳过
             existing = CollectionItem.query.filter(
-                (CollectionItem.url == it.get('url')) | 
-                (CollectionItem.title == it.get('title'))
+                (CollectionItem.url == url) | 
+                (CollectionItem.title == title)
             ).first()
             
             if existing:
+                # If exists, try to update deep content if the new item has it
+                new_deep_collected = bool(it.get('deep_collected'))
+                new_deep_content = it.get('deep_content')
+                
+                if new_deep_collected and new_deep_content and len(str(new_deep_content).strip()) >= 20:
+                     existing.deep_collected = True
+                     if existing.deep_content_obj:
+                         existing.deep_content_obj.content = new_deep_content
+                     else:
+                         existing.deep_content_obj = DeepCollectionContent(content=new_deep_content)
+                     
+                     # Also try to associate rule if missing
+                     if not existing.rule_id:
+                         existing.rule_id = find_matching_rule(existing.url, existing.source)
+                         
+                     db.session.add(existing) # Ensure it's in session
+                     saved += 1 # Count as saved/processed
+
+                if url: seen_urls.add(url)
+                if title: seen_titles.add(title)
                 continue
+
+            deep_collected = bool(it.get('deep_collected'))
+            deep_content = it.get('deep_content')
+            
+            # Validation: Ensure deep_collected is False if content is missing or too short
+            if deep_collected and (not deep_content or len(str(deep_content).strip()) < 20):
+                deep_collected = False
+                deep_content = None
 
             ci = CollectionItem(
                 keyword=keyword,
-                title=it.get('title'),
+                title=title,
                 cover=it.get('cover'),
-                url=it.get('url'),
+                url=url,
                 source=it.get('source'),
-                deep_collected=bool(it.get('deep_collected'))
+                deep_collected=deep_collected
             )
-            if it.get('deep_content'):
-                ci.deep_content_obj = DeepCollectionContent(content=it.get('deep_content'))
+            
+            # Try to associate rule
+            ci.rule_id = find_matching_rule(url, it.get('source'))
+            
+            if deep_content:
+                ci.deep_content_obj = DeepCollectionContent(content=deep_content)
 
             db.session.add(ci)
+            
+            if url: seen_urls.add(url)
+            if title: seen_titles.add(title)
+            
             saved += 1
         except Exception:
             db.session.rollback()
@@ -541,7 +631,31 @@ def collector_save_one():
         ).first()
         
         if existing:
-            # 如果已存在，返回成功但不重复添加，或者返回特定状态
+            # Check if we need to update deep content
+            new_deep_collected = bool(item.get('deep_collected'))
+            new_deep_content = item.get('deep_content')
+            
+            updated = False
+            if new_deep_collected and new_deep_content and len(str(new_deep_content).strip()) >= 50:
+                 existing.deep_collected = True
+                 if existing.deep_content_obj:
+                     existing.deep_content_obj.content = new_deep_content
+                 else:
+                     existing.deep_content_obj = DeepCollectionContent(content=new_deep_content)
+                 updated = True
+            
+            # Also try to associate rule if missing
+            if not existing.rule_id:
+                 rid = find_matching_rule(existing.url, existing.source)
+                 if rid:
+                     existing.rule_id = rid
+                     updated = True
+
+            if updated:
+                 db.session.commit()
+                 return jsonify({"id": existing.id, "msg": "Item updated"})
+
+            # 如果已存在且不需要更新深度内容，返回成功但不重复添加
             # 这里为了前端兼容，返回已存在的ID
             return jsonify({"id": existing.id, "msg": "Item already exists"})
 
@@ -562,6 +676,10 @@ def collector_save_one():
             source=item.get('source'),
             deep_collected=deep_collected
         )
+        
+        # Try to associate rule
+        ci.rule_id = find_matching_rule(item.get('url'), item.get('source'))
+        
         if deep_content:
             ci.deep_content_obj = DeepCollectionContent(content=deep_content)
 

@@ -70,7 +70,8 @@ layui.use(['layer','element','laypage'], function(){
         }
         var sourceClass = '';
         if(it.rule_id){
-            sourceDisplay = '<span class="layui-badge layui-bg-green" style="margin-right:5px;">关联</span>' + sourceDisplay;
+            var ruleName = it.rule_name || '关联';
+            sourceDisplay = '<span class="layui-badge layui-bg-green" style="margin-right:5px;" title="已关联规则: '+ruleName+'">' + ruleName + '</span>' + sourceDisplay;
             sourceClass = 'style="background-color:#f0f9eb;"'; // Light green background for the cell
         }
         
@@ -197,7 +198,11 @@ layui.use(['layer','element','laypage'], function(){
                 })
                 .done(function(res){
                     layer.closeAll('loading');
-                    layer.msg('深度采集成功！已完成 ' + res.processed + ' 条数据的详细采集');
+                    if(res.processed > 0) {
+                        layer.msg('深度采集完成！成功采集 ' + res.processed + ' 条数据的内容');
+                    } else {
+                        layer.msg('深度采集未获取到有效内容，请检查规则或源站状态', {icon: 2});
+                    }
                     loadData();
                 })
                 .fail(function(){
